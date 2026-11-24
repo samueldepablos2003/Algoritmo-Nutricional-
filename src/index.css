@@ -1,0 +1,293 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --mac-bg: #FFFFFF;
+    --mac-surface-glass: rgba(245, 245, 247, 0.8);
+    --mac-border: #E5E5EA;
+    --mac-text-primary: #1D1D1F;
+    --mac-text-secondary: #6E6E73;
+    --mac-accent: #0071E3;
+    --mac-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --mac-spring: cubic-bezier(0.22, 1.12, 0.36, 1);
+  }
+
+  html,
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Plus Jakarta Sans", sans-serif;
+    background-color: var(--mac-bg);
+    color: var(--mac-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html:fullscreen,
+  html:-webkit-full-screen {
+    background-color: var(--mac-bg);
+  }
+
+  html::backdrop {
+    background-color: var(--mac-bg);
+  }
+
+  .font-mono-tabular {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.mac-glass {
+  background-color: rgba(245, 245, 247, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.mac-glass-strong {
+  background-color: rgba(245, 245, 247, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.mac-dock-shadow {
+  box-shadow:
+    0 12px 32px -8px rgba(29, 29, 31, 0.14),
+    0 2px 6px rgba(29, 29, 31, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.mac-card-shadow {
+  box-shadow: 0 1px 3px rgba(29, 29, 31, 0.04);
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1), border-color 200ms ease;
+}
+
+.mac-card-shadow:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px -12px rgba(29, 29, 31, 0.12), 0 4px 10px -4px rgba(29, 29, 31, 0.05);
+}
+
+@keyframes macBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes macSheetIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macQuickLookOpen {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--ql-x, 0px), var(--ql-y, 20px), 0) scale(0.84);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macQuickLookClose {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--ql-x, 0px), var(--ql-y, 20px), 0) scale(0.86);
+  }
+}
+
+@keyframes macSlideNextIn {
+  from {
+    opacity: 0;
+    transform: translate3d(48px, 0, 0) scale(0.93);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macSlidePrevIn {
+  from {
+    opacity: 0;
+    transform: translate3d(-48px, 0, 0) scale(0.93);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macPanelIn {
+  from {
+    opacity: 0;
+    transform: translate3d(28px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes macToastIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.mac-backdrop-in {
+  animation: macBackdropIn 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-backdrop-out {
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mac-sheet-in {
+  animation: macSheetIn 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-quicklook-open {
+  animation: macQuickLookOpen 340ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-quicklook-close {
+  animation: macQuickLookClose 210ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-slide-next-in {
+  animation: macSlideNextIn 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-slide-prev-in {
+  animation: macSlidePrevIn 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-panel-in {
+  animation: macPanelIn 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-toast-in {
+  animation: macToastIn 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-study-dock {
+  background-color: rgba(245, 245, 247, 0.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+@keyframes macStudyExitLeft {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-14vw, 0, 0) scale(0.91);
+  }
+}
+
+@keyframes macStudyExitRight {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(14vw, 0, 0) scale(0.91);
+  }
+}
+
+@keyframes macStudyEnterFromRight {
+  0% {
+    opacity: 0;
+    transform: translate3d(10vw, 0, 0) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macStudyEnterFromLeft {
+  0% {
+    opacity: 0;
+    transform: translate3d(-10vw, 0, 0) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes macStudyEnterDepth {
+  0% {
+    opacity: 0;
+    transform: scale(0.93);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.mac-study-exit-left {
+  animation: macStudyExitLeft 420ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-study-exit-right {
+  animation: macStudyExitRight 420ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-study-enter-right {
+  animation: macStudyEnterFromRight 460ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-study-enter-left {
+  animation: macStudyEnterFromLeft 460ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.mac-study-enter-depth {
+  animation: macStudyEnterDepth 380ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mac-card-shadow,
+  .mac-card-shadow:hover,
+  .mac-backdrop-in,
+  .mac-backdrop-out,
+  .mac-sheet-in,
+  .mac-quicklook-open,
+  .mac-quicklook-close,
+  .mac-slide-next-in,
+  .mac-slide-prev-in,
+  .mac-panel-in,
+  .mac-toast-in,
+  .mac-study-exit-left,
+  .mac-study-exit-right,
+  .mac-study-enter-right,
+  .mac-study-enter-left,
+  .mac-study-enter-depth {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
