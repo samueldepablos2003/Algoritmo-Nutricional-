@@ -5,6 +5,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 title Actualizar - Biblioteca de Algoritmos Nutricionales
 
+set "PORT=3000"
 set "NO_PAUSE=0"
 if /i "%~1"=="--no-pause" set "NO_PAUSE=1"
 
@@ -30,7 +31,13 @@ if not exist ".git" (
     goto :fail
 )
 
-echo [1/4] Verificando cambios locales y conectando con GitHub...
+echo [1/5] Verificando si la aplicación está abierta...
+powershell -NoProfile -Command "$conns = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue; $ids = @($conns | Select-Object -ExpandProperty OwningProcess -Unique); $stopped = $false; foreach ($id in $ids) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'node') { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host ('      Servidor anterior detenido (PID ' + $p.Id + ') para aplicar la actualización.'); $stopped = $true } }; if ($stopped) { Start-Sleep -Milliseconds 500 }"
+
+echo [2/5] Verificando cambios locales y conectando con GitHub...
+set "BEFORE_REV="
+for /f "delims=" %%R in ('git rev-parse --short HEAD 2^>nul') do set "BEFORE_REV=%%R"
+
 set "STASHED=0"
 for /f "delims=" %%S in ('git status --porcelain') do set "STASHED=1"
 
@@ -51,7 +58,7 @@ if /i not "%CURRENT_BRANCH%"=="main" (
     if errorlevel 1 goto :fail
 )
 
-echo [2/4] Descargando últimos cambios desde GitHub (rama main)...
+echo [3/5] Descargando últimos cambios desde GitHub...
 git fetch origin main
 if errorlevel 1 (
     echo [ERROR] No se pudo conectar con GitHub. Verifica tu conexión a internet.
@@ -80,8 +87,17 @@ if "%STASHED%"=="1" (
     )
 )
 
+set "AFTER_REV="
+for /f "delims=" %%R in ('git rev-parse --short HEAD 2^>nul') do set "AFTER_REV=%%R"
+if not "%BEFORE_REV%"=="%AFTER_REV%" (
+    echo       Nuevos cambios aplicados: %BEFORE_REV% -^> %AFTER_REV%
+    git log --oneline %BEFORE_REV%..%AFTER_REV%
+) else (
+    echo       El código ya estaba en la última versión: %AFTER_REV%
+)
+
 echo.
-echo [3/4] Instalando/actualizando dependencias...
+echo [4/5] Instalando/actualizando dependencias...
 call npm install --no-audit --no-fund
 if errorlevel 1 (
     echo       Reintentando instalación en modo compatible...
@@ -94,10 +110,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Recompilando la aplicación...
+echo [5/5] Limpiando compilación anterior y recompilando la aplicación...
+if exist "dist" rmdir /s /q "dist"
 call npm run build
 if errorlevel 1 (
     echo [ERROR] Falló la compilación del proyecto.
+    goto :fail
+)
+if not exist "dist\index.html" (
+    echo [ERROR] No se generó dist\index.html tras la compilación.
     goto :fail
 )
 

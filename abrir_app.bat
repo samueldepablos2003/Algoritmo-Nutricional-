@@ -11,6 +11,10 @@ set "APP_URL=http://localhost:%PORT%"
 echo ============================================================
 echo   Biblioteca de Algoritmos de Tratamiento Médico Nutricional
 echo ============================================================
+where git >nul 2>&1
+if not errorlevel 1 if exist ".git" (
+    for /f "delims=" %%V in ('git log -1 --oneline 2^>nul') do echo   Versión actual: %%V
+)
 echo.
 
 where node >nul 2>&1
@@ -37,8 +41,14 @@ if not exist "node_modules" (
     )
 )
 
-if not exist "dist\index.html" (
-    echo [2/2] Compilando la aplicación...
+set "NEEDS_BUILD=0"
+if not exist "dist\index.html" set "NEEDS_BUILD=1"
+if "%NEEDS_BUILD%"=="0" node -e "const fs=require('fs'),path=require('path');const distMtime=fs.statSync('dist/index.html').mtimeMs;function newest(p){if(!fs.existsSync(p))return 0;const st=fs.statSync(p);if(!st.isDirectory())return st.mtimeMs;let m=0;for(const e of fs.readdirSync(p)){const t=newest(path.join(p,e));if(t>m)m=t;}return m;}const srcMtime=Math.max(newest('src'),newest('public'),newest('index.html'),newest('package.json'),newest('vite.config.ts'));process.exit(srcMtime>distMtime?1:0);"
+if errorlevel 1 set "NEEDS_BUILD=1"
+
+if "%NEEDS_BUILD%"=="1" (
+    echo [2/2] Compilando versión actualizada de la aplicación...
+    if exist "dist" rmdir /s /q "dist"
     call npm run build
     if errorlevel 1 (
         echo.
@@ -49,14 +59,22 @@ if not exist "dist\index.html" (
 )
 
 node -e "const http=require('http'),port=process.env.PORT||'3000';const req=http.get('http://127.0.0.1:'+port,res=>{process.exit(res.statusCode>=200&&res.statusCode<500?0:1);});req.on('error',()=>process.exit(1));req.setTimeout(1000,()=>{req.destroy();process.exit(1);});" >nul 2>&1
-if not errorlevel 1 (
-    echo La aplicación ya estaba ejecutándose en %APP_URL%
-    echo Abriendo en el navegador...
-    start "" "%APP_URL%"
-    timeout /t 2 /nobreak >nul
-    exit /b 0
+if errorlevel 1 goto :start_server
+
+powershell -NoProfile -Command "$buildTime = [Math]::Max((Get-Item 'dist\index.html').LastWriteTimeUtc.Ticks, (Get-Item 'server.ts').LastWriteTimeUtc.Ticks); $conns = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue; $ids = @($conns | Select-Object -ExpandProperty OwningProcess -Unique); $restarted = $false; foreach ($id in $ids) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'node') { if ($p.StartTime.ToUniversalTime().Ticks -lt $buildTime) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; $restarted = $true } } }; if ($restarted) { Start-Sleep -Milliseconds 500; exit 2 } else { exit 0 }"
+if errorlevel 2 (
+    echo Se detectó una actualización reciente. Reiniciando el servidor local...
+    echo.
+    goto :start_server
 )
 
+echo La aplicación ya estaba ejecutándose actualizada en %APP_URL%
+echo Abriendo en el navegador...
+start "" "%APP_URL%"
+timeout /t 2 /nobreak >nul
+exit /b 0
+
+:start_server
 if not exist ".env" (
     echo [Nota] No se encontró archivo .env con GEMINI_API_KEY.
     echo        Todas las funciones locales funcionan 100%% sin internet.
