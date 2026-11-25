@@ -1,17 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
+  BookOpen,
   Check,
   ListChecks,
   LocateFixed,
+  MessageSquare,
   Minus,
   Plus,
   RotateCcw,
   Undo2,
 } from 'lucide-react';
-import { NODE_TONE_STYLES, type EditableDiagram } from '../types/algorithm';
+import type { EditableDiagram } from '../types/algorithm';
 import { clampZoom, stepZoom } from '../utils/algorithmLogic';
-import { computeEdgeGeometry } from '../utils/diagramEngine';
+import { computeDiagramEdgeGeometries } from '../utils/diagramEngine';
+import {
+  computeAdaptiveNodeMetrics,
+  DEFAULT_EDGE_LABEL_FONT_SIZE,
+  getShapeInnerPadding,
+  isCustomSvgShape,
+  resolveEdgeBadgeColors,
+  resolveEdgeColor,
+  resolveNodeColors,
+} from '../utils/diagramTheme';
 import {
   createInitialWalkthrough,
   getAvailableOutgoingEdges,
@@ -23,6 +34,8 @@ import {
   stepBackWalkthrough,
   type WalkthroughState,
 } from '../utils/walkthroughEngine';
+import { AlgorithmContextPopover } from './AlgorithmContextPopover';
+import { NodeShapeBackdrop } from './NodeShapeBackdrop';
 import { OriginalImagePip } from './OriginalImagePip';
 import { WalkthroughPanel } from './WalkthroughPanel';
 import { ZoomPercentInput } from './ZoomPercentInput';
@@ -30,18 +43,21 @@ import { ZoomPercentInput } from './ZoomPercentInput';
 interface InlineWalkthroughStageProps {
   diagram: EditableDiagram;
   sourceImageDataUrl?: string;
+  fallbackReference?: string;
   title: string;
 }
 
 export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
   diagram,
   sourceImageDataUrl,
+  fallbackReference,
   title,
 }) => {
   const [walkthroughState, setWalkthroughState] = useState<WalkthroughState>(() =>
     createInitialWalkthrough(diagram)
   );
   const [panelOpen, setPanelOpen] = useState(true);
+  const [contextOpen, setContextOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -181,29 +197,45 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
     return () => vp.removeEventListener('wheel', handleNativeWheel);
   }, []);
 
-  const nodeMap = useMemo(
-    () => new Map(diagram.nodes.map((n) => [n.id, n])),
-    [diagram.nodes]
-  );
+  const globalFontScale = diagram.fontScale ?? 1;
+  const globalPaletteId = diagram.paletteId ?? 'original';
+  const globalColorMode = diagram.colorMode ?? 'color';
 
-  const edgeGeometries = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof computeEdgeGeometry>>();
-    for (const edge of diagram.edges) {
-      const src = nodeMap.get(edge.from);
-      const tgt = nodeMap.get(edge.to);
-      if (src && tgt) {
-        map.set(edge.id, computeEdgeGeometry(src, tgt, edge));
-      }
+  const adaptiveMetricsMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof computeAdaptiveNodeMetrics>>();
+    for (const n of diagram.nodes) {
+      map.set(n.id, computeAdaptiveNodeMetrics(n, globalFontScale));
     }
     return map;
-  }, [diagram.edges, nodeMap]);
+  }, [diagram.nodes, globalFontScale]);
+
+  const renderedNodes = useMemo(
+    () =>
+      diagram.nodes.map((n) => {
+        const metrics = adaptiveMetricsMap.get(n.id);
+        if (!metrics) return n;
+        if (metrics.width === n.width && metrics.height === n.height) return n;
+        return { ...n, width: metrics.width, height: metrics.height };
+      }),
+    [diagram.nodes, adaptiveMetricsMap]
+  );
+
+  const nodeMap = useMemo(
+    () => new Map(renderedNodes.map((n) => [n.id, n])),
+    [renderedNodes]
+  );
+
+  const edgeGeometries = useMemo(
+    () => computeDiagramEdgeGeometries(renderedNodes, diagram.edges),
+    [renderedNodes, diagram.edges]
+  );
 
   const svgBounds = useMemo(() => {
     let minX = 0;
     let minY = 0;
     let maxX = 1600;
     let maxY = 1000;
-    for (const n of diagram.nodes) {
+    for (const n of renderedNodes) {
       if (n.x < minX) minX = n.x;
       if (n.y < minY) minY = n.y;
       if (n.x + n.width > maxX) maxX = n.x + n.width;
@@ -216,7 +248,7 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
       width: Math.ceil(maxX - minX + PAD * 2),
       height: Math.ceil(maxY - minY + PAD * 2),
     };
-  }, [diagram.nodes]);
+  }, [renderedNodes]);
 
   const currentNodeId = getCurrentNodeId(walkthroughState);
   const currentNode = currentNodeId ? nodeMap.get(currentNodeId) ?? null : null;
@@ -366,78 +398,40 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
               className="pointer-events-none absolute overflow-visible"
             >
               <defs>
-                <marker
-                  id="iw-arrow-gray"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#6E6E73"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="iw-arrow-blue"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#0071E3"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="iw-arrow-green"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#15803D"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="iw-arrow-amber"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#B45309"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
+                {Array.from(
+                  new Set<string>([
+                    '#0071E3',
+                    '#6E6E73',
+                    '#15803D',
+                    '#B45309',
+                    ...diagram.edges.map((edge) => {
+                      const g = edgeGeometries.get(edge.id);
+                      return g
+                        ? resolveEdgeColor(g.strokeColor, globalPaletteId, globalColorMode)
+                        : '#6E6E73';
+                    }),
+                  ])
+                ).map((hex) => (
+                  <marker
+                    key={hex}
+                    id={`iw-arrow-${hex.replace('#', '')}`}
+                    viewBox="0 0 10 10"
+                    refX="8"
+                    refY="5"
+                    markerWidth="7"
+                    markerHeight="7"
+                    orient="auto-start-reverse"
+                  >
+                    <path
+                      d="M 1 1.5 L 8.5 5 L 1 8.5"
+                      fill="none"
+                      stroke={hex}
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </marker>
+                ))}
               </defs>
 
               {diagram.edges.map((edge) => {
@@ -450,22 +444,20 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                   !isCurrentChoiceEdge && selectableEdgeIds.has(edge.id);
                 const isSelectableEdge = isCurrentChoiceEdge || isAlternativeBranchEdge;
 
+                const themedStrokeColor = resolveEdgeColor(
+                  geom.strokeColor,
+                  globalPaletteId,
+                  globalColorMode
+                );
                 const strokeColor = isVisitedEdge
                   ? geom.strokeColor === '#15803D' || geom.strokeColor === '#B45309'
-                    ? geom.strokeColor
+                    ? themedStrokeColor
                     : '#0071E3'
                   : isCurrentChoiceEdge
                     ? '#0071E3'
-                    : geom.strokeColor;
+                    : themedStrokeColor;
 
-                const markerId =
-                  strokeColor === '#0071E3'
-                    ? 'iw-arrow-blue'
-                    : strokeColor === '#15803D'
-                      ? 'iw-arrow-green'
-                      : strokeColor === '#B45309'
-                        ? 'iw-arrow-amber'
-                        : 'iw-arrow-gray';
+                const markerId = `iw-arrow-${strokeColor.replace('#', '')}`;
 
                 const edgeOpacity = isVisitedEdge
                   ? 1
@@ -546,6 +538,19 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                     ? 0.52
                     : 0.18;
 
+              const badgeColors = resolveEdgeBadgeColors(
+                geom.strokeColor,
+                globalPaletteId,
+                globalColorMode
+              );
+              const edgeLabelFontSize = Number(
+                ((edge.labelFontSize ?? DEFAULT_EDGE_LABEL_FONT_SIZE) * globalFontScale).toFixed(2)
+              );
+              const edgeCustomOpacity =
+                typeof edge.labelOpacity === 'number' && Number.isFinite(edge.labelOpacity)
+                  ? edge.labelOpacity
+                  : 1;
+
               return (
                 <button
                   key={`iw-label-${edge.id}`}
@@ -562,9 +567,17 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                     left: 0,
                     top: 0,
                     transform: `translate3d(${geom.labelX}px, ${geom.labelY}px, 0) translate(-50%, -50%)`,
-                    opacity: labelOpacity,
+                    opacity: labelOpacity * edgeCustomOpacity,
+                    fontSize: `${edgeLabelFontSize}px`,
+                    ...(!isCurrentChoiceEdge && !isAlternativeBranchEdge && !isVisitedEdge
+                      ? {
+                          backgroundColor: badgeColors.fill,
+                          color: badgeColors.text,
+                          borderColor: '#FFFFFF',
+                        }
+                      : {}),
                   }}
-                  className={`absolute inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11.5px] font-semibold transition-[opacity,color,background-color,border-color] duration-150 whitespace-nowrap ${
+                  className={`absolute inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-semibold transition-[opacity,color,background-color,border-color] duration-150 whitespace-nowrap ${
                     isCurrentChoiceEdge
                       ? 'cursor-pointer border-[#0071E3] bg-white text-[#0071E3] shadow-[0_4px_14px_-4px_rgba(0,113,227,0.38)] ring-2 ring-[#0071E3]/15 hover:bg-[#0071E3] hover:text-white'
                       : isAlternativeBranchEdge
@@ -575,11 +588,7 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                             : geom.strokeColor === '#B45309'
                               ? 'border-[#B45309] bg-[#B45309] text-white shadow-xs'
                               : 'border-[#0071E3] bg-[#0071E3] text-white shadow-xs'
-                          : geom.strokeColor === '#15803D'
-                            ? 'border-white bg-[#DCFCE7] text-[#166534]'
-                            : geom.strokeColor === '#B45309'
-                              ? 'border-white bg-[#FEF3C7] text-[#92400E]'
-                              : 'border-white bg-[#F5F5F7] text-[#1D1D1F]'
+                          : ''
                   }`}
                 >
                   {isVisitedEdge && <Check className="h-3 w-3 shrink-0" aria-hidden="true" />}
@@ -592,8 +601,14 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
             })}
 
             {/* Interactive Nodes Layer */}
-            {diagram.nodes.map((node) => {
-              const toneStyle = NODE_TONE_STYLES[node.tone] ?? NODE_TONE_STYLES.white;
+            {renderedNodes.map((node) => {
+              const toneStyle = resolveNodeColors(node.tone, globalPaletteId, globalColorMode);
+              const metrics =
+                adaptiveMetricsMap.get(node.id) ??
+                computeAdaptiveNodeMetrics(node, globalFontScale);
+              const usesCustomVector = isCustomSvgShape(node.shape);
+              const innerPadding = getShapeInnerPadding(node.shape);
+              const hasComment = Boolean(node.comment?.trim());
               const borderRadius =
                 node.shape === 'pill'
                   ? `${Math.round(node.height / 2)}px`
@@ -624,6 +639,11 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                   : isAlternativeTarget
                     ? 0.34
                     : 0.2;
+
+              const resolvedBorderColor =
+                isCurrentNode || isVisitedNode ? '#0071E3' : toneStyle.stroke;
+              const resolvedBorderWidth =
+                isCurrentNode || isVisitedNode || node.shape === 'decision' ? 2 : 1.5;
 
               return (
                 <div
@@ -658,38 +678,72 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                     transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
                     width: node.width,
                     height: node.height,
-                    borderRadius,
+                    paddingLeft: `${innerPadding.px}px`,
+                    paddingRight: `${innerPadding.px}px`,
+                    paddingTop: `${innerPadding.py}px`,
+                    paddingBottom: `${innerPadding.py}px`,
                     opacity: nodeOpacity,
-                    backgroundColor: toneStyle.fill,
-                    borderColor: isCurrentNode || isVisitedNode ? '#0071E3' : toneStyle.stroke,
-                    borderWidth:
-                      isCurrentNode || isVisitedNode || node.shape === 'decision' ? 2 : 1.5,
-                    boxShadow: isCurrentNode
-                      ? '0 0 0 4px rgba(0, 113, 227, 0.22), 0 14px 30px -12px rgba(0, 113, 227, 0.28)'
-                      : isVisitedNode
-                        ? '0 8px 22px -10px rgba(0, 113, 227, 0.18)'
-                        : '0 2px 8px -4px rgba(29,29,31,0.08)',
+                    ...(usesCustomVector
+                      ? {
+                          backgroundColor: 'transparent',
+                          borderColor: 'transparent',
+                          borderWidth: 0,
+                        }
+                      : {
+                          borderRadius,
+                          backgroundColor: toneStyle.fill,
+                          borderColor: resolvedBorderColor,
+                          borderWidth: resolvedBorderWidth,
+                          boxShadow: isCurrentNode
+                            ? '0 0 0 4px rgba(0, 113, 227, 0.22), 0 14px 30px -12px rgba(0, 113, 227, 0.28)'
+                            : isVisitedNode
+                              ? '0 8px 22px -10px rgba(0, 113, 227, 0.18)'
+                              : '0 2px 8px -4px rgba(29,29,31,0.08)',
+                        }),
                   }}
-                  className={`absolute flex flex-col items-center justify-center border px-4 py-2.5 text-center transition-[opacity,box-shadow,border-color,background-color] duration-150 ${
+                  className={`absolute flex flex-col items-center justify-center text-center transition-[opacity,box-shadow,border-color,background-color] duration-150 ${
+                    usesCustomVector ? '' : 'border'
+                  } ${
                     isVisitedNode || isSelectableTarget ? 'cursor-pointer' : 'cursor-default'
                   }`}
                 >
+                  {usesCustomVector && (
+                    <NodeShapeBackdrop
+                      shape={node.shape}
+                      width={node.width}
+                      height={node.height}
+                      fill={toneStyle.fill}
+                      stroke={resolvedBorderColor}
+                      strokeWidth={resolvedBorderWidth}
+                      highlightRing={isCurrentNode}
+                    />
+                  )}
+
                   {node.shape === 'decision' && (
                     <span
                       style={{
                         borderColor: toneStyle.stroke,
                         color: toneStyle.titleColor,
                       }}
-                      className="pointer-events-none absolute -top-2.5 left-4 rounded-full border bg-white px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em]"
+                      className="pointer-events-none absolute -top-2.5 left-4 z-10 rounded-full border bg-white px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em]"
                     >
                       DECISIÓN
+                    </span>
+                  )}
+
+                  {hasComment && (
+                    <span
+                      title={`Comentario: ${node.comment}`}
+                      className="pointer-events-auto absolute -left-2 -top-2 z-20 flex h-5 w-5 items-center justify-center rounded-full border border-[#0071E3]/40 bg-white text-[#0071E3] shadow-xs"
+                    >
+                      <MessageSquare className="h-2.5 w-2.5" aria-hidden="true" />
                     </span>
                   )}
 
                   {isVisitedNode && stepIndex !== undefined && (
                     <span
                       aria-hidden="true"
-                      className={`pointer-events-none absolute -right-2.5 -top-2.5 flex h-6 w-6 items-center justify-center rounded-full font-mono-tabular text-[11px] font-bold shadow-sm ${
+                      className={`pointer-events-none absolute -right-2.5 -top-2.5 z-20 flex h-6 w-6 items-center justify-center rounded-full font-mono-tabular text-[11px] font-bold shadow-sm ${
                         isCurrentNode
                           ? 'bg-[#0071E3] text-white'
                           : 'border border-[#0071E3]/40 bg-white text-[#0071E3]'
@@ -699,17 +753,25 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
                     </span>
                   )}
 
-                  <div className="pointer-events-none flex flex-col items-center justify-center gap-1 overflow-hidden">
+                  <div className="pointer-events-none relative z-10 flex flex-col items-center justify-center gap-1 overflow-hidden">
                     <p
-                      style={{ color: toneStyle.titleColor }}
-                      className="text-[14.5px] font-bold leading-snug tracking-[-0.01em]"
+                      style={{
+                        color: toneStyle.titleColor,
+                        fontSize: `${metrics.titleFontSize}px`,
+                        opacity: metrics.titleOpacity,
+                      }}
+                      className="font-bold leading-snug tracking-[-0.01em]"
                     >
                       {node.title}
                     </p>
                     {node.body && (
                       <p
-                        style={{ color: toneStyle.bodyColor }}
-                        className="text-[12.5px] font-medium leading-snug"
+                        style={{
+                          color: toneStyle.bodyColor,
+                          fontSize: `${metrics.bodyFontSize}px`,
+                          opacity: metrics.bodyOpacity,
+                        }}
+                        className="font-medium leading-snug"
                       >
                         {node.body}
                       </p>
@@ -807,6 +869,27 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
 
           <button
             type="button"
+            onClick={() => setContextOpen((v) => !v)}
+            aria-pressed={contextOpen}
+            aria-label="Ver contexto del algoritmo"
+            title="Contexto del algoritmo"
+            className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+              contextOpen
+                ? 'bg-[#0071E3] text-white'
+                : 'text-[#1D1D1F] hover:bg-white/90'
+            }`}
+          >
+            <BookOpen className="h-4 w-4" aria-hidden="true" />
+            {!contextOpen && Boolean(diagram.clinicalContext?.summary || diagram.subtitle) && (
+              <span
+                aria-hidden="true"
+                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#0071E3]"
+              />
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setPanelOpen((v) => !v)}
             aria-pressed={panelOpen}
             aria-label={panelOpen ? 'Ocultar panel Recorrido Guiado' : 'Mostrar panel Recorrido Guiado'}
@@ -820,6 +903,16 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
             <ListChecks className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
+
+        {/* Floating Algorithm Context / Introduction Popover */}
+        <AlgorithmContextPopover
+          open={contextOpen}
+          context={diagram.clinicalContext}
+          fallbackSubtitle={diagram.subtitle}
+          fallbackReference={diagram.reference ?? fallbackReference}
+          editable={false}
+          onClose={() => setContextOpen(false)}
+        />
       </div>
 
       {/* Right Checklist & Active Step Panel */}

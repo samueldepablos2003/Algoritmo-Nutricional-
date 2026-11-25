@@ -270,7 +270,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} noValidate className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          <div className="h-[495.4px] min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           {/* Image Picker / Dropzone */}
           <div>
             <label className="block text-[13px] font-medium text-[#1D1D1F] mb-2">

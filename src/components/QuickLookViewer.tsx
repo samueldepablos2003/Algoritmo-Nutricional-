@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BookOpen,
   Eraser,
   Eye,
   Hand,
@@ -31,6 +32,7 @@ import {
   stepZoom,
   undoLastStroke,
 } from '../utils/algorithmLogic';
+import { AlgorithmContextPopover } from './AlgorithmContextPopover';
 import { AlgorithmGenerator } from './AlgorithmGenerator';
 import { InlineWalkthroughStage } from './InlineWalkthroughStage';
 import { OriginalImagePip } from './OriginalImagePip';
@@ -50,6 +52,7 @@ interface QuickLookViewerProps {
     tags: string[];
     imageDataUrl: string;
     sourceImageDataUrl?: string;
+    reference?: string;
     notes: string;
     diagram: EditableDiagram;
   }) => Promise<void>;
@@ -141,6 +144,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
   const [tool, setTool] = useState<ToolMode>('pan');
   const [highlightColor, setHighlightColor] = useState<HighlightColor>('yellow');
   const [showNotes, setShowNotes] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const [notesDraft, setNotesDraft] = useState('');
   const [noteSaveState, setNoteSaveState] = useState<'idle' | 'saved'>('idle');
   const [editTitleDraft, setEditTitleDraft] = useState('');
@@ -174,6 +178,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
     setIsSavingEdit(false);
     setActiveStroke(null);
     drawingStrokeRef.current = null;
+    setShowContext(false);
     setViewerMode('view');
   }, [currentAlgorithm?.id, isOpen]);
 
@@ -618,6 +623,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
             sourceImageDataUrl={
               currentAlgorithm.sourceImageDataUrl ?? currentAlgorithm.diagram.sourceImageDataUrl
             }
+            fallbackReference={currentAlgorithm.reference}
             title={currentAlgorithm.title}
           />
         ) : (
@@ -839,7 +845,46 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
                   <Eraser className="h-4 w-4" />
                 </button>
               </div>
+
+              <div className="my-1 h-px w-6 bg-[#D1D1D6]" aria-hidden="true" />
+
+              {/* Contexto del algoritmo (Floating Popover Trigger) */}
+              <button
+                type="button"
+                data-testid="viewer-context-btn"
+                onClick={() => setShowContext((v) => !v)}
+                aria-pressed={showContext}
+                aria-label="Ver contexto del algoritmo"
+                title="Contexto del algoritmo"
+                className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
+                  showContext
+                    ? 'bg-[#0071E3] text-white'
+                    : 'text-[#1D1D1F] hover:bg-white/90'
+                }`}
+              >
+                <BookOpen className="h-4 w-4" aria-hidden="true" />
+                {!showContext &&
+                  Boolean(
+                    currentAlgorithm.diagram?.clinicalContext?.summary ||
+                      currentAlgorithm.subtitle
+                  ) && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#0071E3]"
+                    />
+                  )}
+              </button>
             </div>
+
+            {/* Floating Algorithm Context / Introduction Popover */}
+            <AlgorithmContextPopover
+              open={showContext}
+              context={currentAlgorithm.diagram?.clinicalContext}
+              fallbackSubtitle={currentAlgorithm.subtitle}
+              fallbackReference={currentAlgorithm.reference ?? currentAlgorithm.diagram?.reference}
+              editable={false}
+              onClose={() => setShowContext(false)}
+            />
           </div>
         )}
 

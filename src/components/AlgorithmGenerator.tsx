@@ -9,13 +9,16 @@ import React, {
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Check,
   GitBranch,
   Hand,
   LayoutGrid,
   ListChecks,
   LocateFixed,
+  MessageSquare,
   Minus,
+  MoreHorizontal,
   MousePointer2,
   Pencil,
   Plus,
@@ -23,14 +26,18 @@ import {
   RotateCcw,
   Route,
   Save,
+  Square,
   Trash2,
   Undo2,
 } from 'lucide-react';
 import {
   NODE_TONE_STYLES,
   type AlgorithmItem,
+  type DiagramClinicalContext,
+  type DiagramColorMode,
   type DiagramEdge,
   type DiagramNode,
+  type DiagramPaletteId,
   type EdgeStyle,
   type EditableDiagram,
   type NodeShape,
@@ -38,7 +45,7 @@ import {
 } from '../types/algorithm';
 import { clampZoom, stepZoom } from '../utils/algorithmLogic';
 import {
-  autoLayoutDiagram,
+  computeDiagramEdgeGeometries,
   computeEdgeGeometry,
   computePreviewEdgePath,
   computeSnapAndGuides,
@@ -51,10 +58,23 @@ import {
   pushHistory,
   redoHistory,
   serializeDiagramToSvgDataUrl,
+  smartAutoLayoutDiagram,
   undoHistory,
   type AlignmentGuide,
   type HistoryState,
 } from '../utils/diagramEngine';
+import {
+  ALL_NODE_SHAPE_LABELS,
+  computeAdaptiveNodeMetrics,
+  DEFAULT_BODY_FONT_SIZE,
+  DEFAULT_EDGE_LABEL_FONT_SIZE,
+  DEFAULT_TITLE_FONT_SIZE,
+  getShapeInnerPadding,
+  isCustomSvgShape,
+  resolveEdgeBadgeColors,
+  resolveEdgeColor,
+  resolveNodeColors,
+} from '../utils/diagramTheme';
 import {
   createInitialWalkthrough,
   getAvailableOutgoingEdges,
@@ -66,8 +86,14 @@ import {
   stepBackWalkthrough,
   type WalkthroughState,
 } from '../utils/walkthroughEngine';
+import { AlgorithmContextPopover } from './AlgorithmContextPopover';
+import { EditorFormatPanel } from './EditorFormatPanel';
+import { EditorShapesPopover } from './EditorShapesPopover';
 import { GeneratorAiDrawer } from './GeneratorAiDrawer';
+import { NodeCommentPopover } from './NodeCommentPopover';
+import { NodeShapeBackdrop } from './NodeShapeBackdrop';
 import { OriginalImagePip } from './OriginalImagePip';
+import { SelectedTextPanel, type SelectedTextKind } from './SelectedTextPanel';
 import { WalkthroughPanel } from './WalkthroughPanel';
 import { ZoomPercentInput } from './ZoomPercentInput';
 
@@ -91,6 +117,7 @@ interface AlgorithmGeneratorProps {
     tags: string[];
     imageDataUrl: string;
     sourceImageDataUrl?: string;
+    reference?: string;
     notes: string;
     diagram: EditableDiagram;
   }) => Promise<void>;
@@ -105,11 +132,11 @@ const EDGE_STYLE_LABELS: Record<EdgeStyle, string> = {
   dashed: 'Línea punteada',
 };
 
-const SHAPE_LABELS: Record<NodeShape, string> = {
-  process: 'Proceso',
-  decision: 'Decisión',
-  pill: 'Inicio / Fin',
-};
+const SHAPE_LABELS: Record<NodeShape, string> = ALL_NODE_SHAPE_LABELS;
+
+type SelectedTextTarget =
+  | { kind: 'node-title' | 'node-body'; nodeId: string }
+  | { kind: 'edge-label'; edgeId: string };
 
 export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
   initialAlgorithm,
@@ -150,6 +177,13 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [showAddNodeMenu, setShowAddNodeMenu] = useState(false);
+  const [formatPanelOpen, setFormatPanelOpen] = useState(false);
+  const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
+  const [selectedTextTarget, setSelectedTextTarget] = useState<SelectedTextTarget | null>(null);
+  const [commentingNodeId, setCommentingNodeId] = useState<string | null>(null);
+  const [commentAnchor, setCommentAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [commentHintVisible, setCommentHintVisible] = useState(false);
+  const commentHintTimerRef = useRef<number | null>(null);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(
     initialMode === 'walkthrough' ? false : openAiDrawerInitially
   );
@@ -211,6 +245,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
         otherNodes: DiagramNode[];
         nodeLookup: Map<string, DiagramNode>;
         hasMoved: boolean;
+        clickedTextKind?: 'node-title' | 'node-body';
       }
     | {
         mode: 'connect-drag';
@@ -300,25 +335,39 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
     fitCanvasToView(initialDiagram);
   }, [initialDiagram, fitCanvasToView]);
 
-  const renderedNodes = diagram.nodes;
+  const globalFontScale = diagram.fontScale ?? 1;
+  const globalPaletteId: DiagramPaletteId = diagram.paletteId ?? 'original';
+  const globalColorMode: DiagramColorMode = diagram.colorMode ?? 'color';
+
+  const adaptiveMetricsMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof computeAdaptiveNodeMetrics>>();
+    for (const n of diagram.nodes) {
+      map.set(n.id, computeAdaptiveNodeMetrics(n, globalFontScale));
+    }
+    return map;
+  }, [diagram.nodes, globalFontScale]);
+
+  const renderedNodes = useMemo(
+    () =>
+      diagram.nodes.map((n) => {
+        const metrics = adaptiveMetricsMap.get(n.id);
+        if (!metrics) return n;
+        if (metrics.width === n.width && metrics.height === n.height) return n;
+        return { ...n, width: metrics.width, height: metrics.height };
+      }),
+    [diagram.nodes, adaptiveMetricsMap]
+  );
 
   const nodeMap = useMemo(
     () => new Map(renderedNodes.map((n) => [n.id, n])),
     [renderedNodes]
   );
 
-  // Memoize edge geometries once per diagram change (avoid recomputing twice for SVG + labels)
-  const edgeGeometries = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof computeEdgeGeometry>>();
-    for (const edge of diagram.edges) {
-      const src = nodeMap.get(edge.from);
-      const tgt = nodeMap.get(edge.to);
-      if (src && tgt) {
-        map.set(edge.id, computeEdgeGeometry(src, tgt, edge));
-      }
-    }
-    return map;
-  }, [diagram.edges, nodeMap]);
+  // Memoize graph-aware edge geometries once per diagram change (staggered rails, obstacle detours & label separation)
+  const edgeGeometries = useMemo(
+    () => computeDiagramEdgeGeometries(renderedNodes, diagram.edges),
+    [renderedNodes, diagram.edges]
+  );
 
   // Generous explicit world-space viewBox so all arrows stay strictly inside the SVG viewport
   // (prevents Chromium/WebKit compositor dirty-rect clipping/freezing bugs seen with 1x1 overflow-visible SVGs)
@@ -458,7 +507,16 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
           target.isContentEditable);
 
       if (e.key === 'Escape') {
-        if (editingNodeId) {
+        if (commentingNodeId) {
+          setCommentingNodeId(null);
+          setCommentAnchor(null);
+        } else if (contextPopoverOpen) {
+          setContextPopoverOpen(false);
+        } else if (selectedTextTarget) {
+          setSelectedTextTarget(null);
+        } else if (formatPanelOpen) {
+          setFormatPanelOpen(false);
+        } else if (editingNodeId) {
           setEditingNodeId(null);
         } else if (connectSourceId) {
           setConnectSourceId(null);
@@ -494,6 +552,10 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    commentingNodeId,
+    contextPopoverOpen,
+    selectedTextTarget,
+    formatPanelOpen,
     editingNodeId,
     connectSourceId,
     showAddNodeMenu,
@@ -504,33 +566,81 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
   const handleAddNode = (shape: NodeShape) => {
     const vp = canvasViewportRef.current;
+    const widthForShape =
+      shape === 'diamond'
+        ? 290
+        : shape === 'oval'
+          ? 270
+          : shape === 'block-arrow' || shape === 'thin-arrow' || shape === 'double-arrow'
+            ? 300
+            : DEFAULT_NODE_WIDTH;
+    const heightForShape =
+      shape === 'diamond'
+        ? 136
+        : shape === 'pill'
+          ? 84
+          : shape === 'oval'
+            ? 96
+            : shape === 'block-arrow' || shape === 'thin-arrow' || shape === 'double-arrow'
+              ? 100
+              : DEFAULT_NODE_HEIGHT;
+
     const centerWorldX = vp
-      ? Math.round((vp.clientWidth / 2 - pan.x) / zoom - DEFAULT_NODE_WIDTH / 2)
+      ? Math.round((vp.clientWidth / 2 - pan.x) / zoom - widthForShape / 2)
       : 640;
     const centerWorldY = vp
-      ? Math.round((vp.clientHeight / 2 - pan.y) / zoom - DEFAULT_NODE_HEIGHT / 2)
+      ? Math.round((vp.clientHeight / 2 - pan.y) / zoom - heightForShape / 2)
       : 320;
 
     // Slight stagger if another node sits directly at that spot
     const offset = (diagram.nodes.length % 4) * 22;
+    const defaultTitleByShape: Record<NodeShape, string> = {
+      oval: 'Inicio / Resultado',
+      process: 'Nueva conducta nutricional',
+      diamond: '¿Criterio clínico?',
+      pill: 'Inicio / Meta clínica',
+      parallelogram: 'Entrada / Valoración',
+      hexagon: 'Preparación / Protocolo',
+      'block-arrow': 'Dirección terapéutica',
+      'thin-arrow': 'Transición clínica',
+      'double-arrow': 'Relación bidireccional',
+      decision: '¿Criterio clínico?',
+    };
+    const defaultBodyByShape: Record<NodeShape, string> = {
+      oval: 'Haz clic en el texto para editar',
+      process: 'Haz clic en el texto para editar el detalle clínico',
+      diamond: 'Define el punto de decisión (Sí / No)',
+      pill: 'Objetivo o fase del algoritmo',
+      parallelogram: 'Datos o parámetros clínicos',
+      hexagon: 'Parámetros previos o requisitos',
+      'block-arrow': 'Siguiente intervención',
+      'thin-arrow': 'Paso intermedio',
+      'double-arrow': 'Ajuste continuo',
+      decision: 'Define el punto de decisión (Sí / No)',
+    };
+    const defaultToneByShape: Record<NodeShape, NodeTone> = {
+      oval: 'mint',
+      process: 'white',
+      diamond: 'blue',
+      pill: 'gray',
+      parallelogram: 'blue',
+      hexagon: 'amber',
+      'block-arrow': 'gray',
+      'thin-arrow': 'white',
+      'double-arrow': 'gray',
+      decision: 'blue',
+    };
+
     const newNode: DiagramNode = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       x: centerWorldX + offset,
       y: centerWorldY + offset,
-      width: DEFAULT_NODE_WIDTH,
-      height: shape === 'pill' ? 84 : DEFAULT_NODE_HEIGHT,
-      title:
-        shape === 'decision'
-          ? '¿Criterio clínico?'
-          : shape === 'pill'
-            ? 'Inicio / Meta clínica'
-            : 'Nueva conducta nutricional',
-      body:
-        shape === 'decision'
-          ? 'Define el punto de decisión (Sí / No)'
-          : 'Doble clic para editar el detalle clínico',
+      width: widthForShape,
+      height: heightForShape,
+      title: defaultTitleByShape[shape] ?? 'Nueva conducta nutricional',
+      body: defaultBodyByShape[shape] ?? 'Haz clic en el texto para editar',
       shape,
-      tone: shape === 'decision' ? 'blue' : shape === 'pill' ? 'gray' : 'white',
+      tone: defaultToneByShape[shape] ?? 'white',
     };
 
     commitDiagram({
@@ -544,7 +654,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
   };
 
   const handleAutoLayout = () => {
-    const aligned = autoLayoutDiagram(diagram);
+    const aligned = smartAutoLayoutDiagram(diagram);
     commitDiagram(aligned);
     fitCanvasToView(aligned);
   };
@@ -562,6 +672,219 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
     commitDiagram({
       ...diagram,
       edges: diagram.edges.map((e) => (e.id === selectedEdgeId ? { ...e, ...patch } : e)),
+    });
+  };
+
+  const handleUpdateGlobalFormat = (
+    patch: Partial<Pick<EditableDiagram, 'colorMode' | 'paletteId' | 'fontScale'>>
+  ) => {
+    commitDiagram({
+      ...diagram,
+      ...patch,
+    });
+  };
+
+  const handleResetGlobalFormat = () => {
+    commitDiagram({
+      ...diagram,
+      colorMode: 'color',
+      paletteId: 'original',
+      fontScale: 1,
+    });
+  };
+
+  const openCommentPopoverForNode = (nodeId: string) => {
+    const vp = canvasViewportRef.current;
+    const nodeEl = nodeElsRef.current.get(nodeId);
+    if (vp && nodeEl) {
+      const vpRect = vp.getBoundingClientRect();
+      const boxRect = nodeEl.getBoundingClientRect();
+      const popoverW = 336;
+      const popoverH = 196;
+      const rawLeft = boxRect.right - vpRect.left + 12;
+      const clampedLeft =
+        rawLeft + popoverW <= vpRect.width - 76
+          ? rawLeft
+          : Math.max(16, boxRect.left - vpRect.left - popoverW - 12);
+      const rawTop = boxRect.top - vpRect.top;
+      const clampedTop = Math.min(
+        Math.max(16, rawTop),
+        Math.max(16, vpRect.height - popoverH - 76)
+      );
+      setCommentAnchor({ left: Math.round(clampedLeft), top: Math.round(clampedTop) });
+    } else {
+      setCommentAnchor({ left: 24, top: 24 });
+    }
+    setCommentingNodeId(nodeId);
+    setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
+    setShowAddNodeMenu(false);
+    setCommentHintVisible(false);
+  };
+
+  const handleToolbarCommentClick = () => {
+    if (!selectedNodeId) {
+      setCommentHintVisible(true);
+      if (commentHintTimerRef.current !== null) {
+        window.clearTimeout(commentHintTimerRef.current);
+      }
+      commentHintTimerRef.current = window.setTimeout(() => {
+        setCommentHintVisible(false);
+      }, 2600);
+      return;
+    }
+    if (commentingNodeId === selectedNodeId) {
+      setCommentingNodeId(null);
+      setCommentAnchor(null);
+      return;
+    }
+    openCommentPopoverForNode(selectedNodeId);
+  };
+
+  const handleSaveNodeComment = (nodeId: string, comment: string) => {
+    commitDiagram({
+      ...diagram,
+      nodes: diagram.nodes.map((n) =>
+        n.id === nodeId ? { ...n, comment: comment || undefined } : n
+      ),
+    });
+    setCommentingNodeId(null);
+    setCommentAnchor(null);
+  };
+
+  const handleSaveClinicalContext = (nextContext: DiagramClinicalContext | undefined) => {
+    commitDiagram({
+      ...diagram,
+      clinicalContext: nextContext,
+      ...(nextContext?.protocolSource ? { reference: nextContext.protocolSource } : {}),
+    });
+  };
+
+  // Live update helper for the floating "Texto seleccionado" panel
+  const updateSelectedTextTarget = (
+    updater: (current: EditableDiagram) => EditableDiagram
+  ) => {
+    setHistory((prev) => ({
+      ...prev,
+      present: updater(prev.present),
+    }));
+  };
+
+  const activeTextInfo = useMemo(() => {
+    if (!selectedTextTarget) return null;
+    if (selectedTextTarget.kind === 'edge-label') {
+      const edge = diagram.edges.find((e) => e.id === selectedTextTarget.edgeId);
+      if (!edge) return null;
+      return {
+        kind: 'edge-label' as SelectedTextKind,
+        text: edge.label,
+        fontSize: edge.labelFontSize ?? DEFAULT_EDGE_LABEL_FONT_SIZE,
+        opacity: edge.labelOpacity ?? 1,
+      };
+    }
+    const node = diagram.nodes.find((n) => n.id === selectedTextTarget.nodeId);
+    if (!node) return null;
+    if (selectedTextTarget.kind === 'node-title') {
+      return {
+        kind: 'node-title' as SelectedTextKind,
+        text: node.title,
+        fontSize: node.titleFontSize ?? DEFAULT_TITLE_FONT_SIZE,
+        opacity: node.titleOpacity ?? 1,
+      };
+    }
+    return {
+      kind: 'node-body' as SelectedTextKind,
+      text: node.body,
+      fontSize: node.bodyFontSize ?? DEFAULT_BODY_FONT_SIZE,
+      opacity: node.bodyOpacity ?? 1,
+    };
+  }, [selectedTextTarget, diagram.nodes, diagram.edges]);
+
+  const handleDuplicateSelectedTextElement = () => {
+    if (!selectedTextTarget) return;
+    if (selectedTextTarget.kind === 'edge-label') {
+      const edge = diagram.edges.find((e) => e.id === selectedTextTarget.edgeId);
+      if (!edge) return;
+      commitDiagram({
+        ...diagram,
+        edges: diagram.edges.map((e) =>
+          e.id === edge.id ? { ...e, label: `${e.label} (copia)` } : e
+        ),
+      });
+      return;
+    }
+    const sourceNode = diagram.nodes.find((n) => n.id === selectedTextTarget.nodeId);
+    if (!sourceNode) return;
+    const duplicate: DiagramNode = {
+      ...sourceNode,
+      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      x: sourceNode.x + 28,
+      y: sourceNode.y + 28,
+    };
+    commitDiagram({
+      ...diagram,
+      nodes: [...diagram.nodes, duplicate],
+    });
+    setSelectedNodeId(duplicate.id);
+    setSelectedTextTarget({ kind: selectedTextTarget.kind, nodeId: duplicate.id });
+  };
+
+  const handleDeleteSelectedTextElement = () => {
+    if (!selectedTextTarget) return;
+    if (selectedTextTarget.kind === 'edge-label') {
+      commitDiagram({
+        ...diagram,
+        edges: diagram.edges.map((e) =>
+          e.id === selectedTextTarget.edgeId ? { ...e, label: '' } : e
+        ),
+      });
+      setSelectedTextTarget(null);
+      return;
+    }
+    if (selectedTextTarget.kind === 'node-body') {
+      commitDiagram({
+        ...diagram,
+        nodes: diagram.nodes.map((n) =>
+          n.id === selectedTextTarget.nodeId ? { ...n, body: '' } : n
+        ),
+      });
+      setSelectedTextTarget(null);
+      return;
+    }
+    commitDiagram({
+      ...diagram,
+      nodes: diagram.nodes.filter((n) => n.id !== selectedTextTarget.nodeId),
+      edges: diagram.edges.filter(
+        (e) =>
+          e.from !== selectedTextTarget.nodeId && e.to !== selectedTextTarget.nodeId
+      ),
+    });
+    setSelectedNodeId(null);
+    setSelectedTextTarget(null);
+  };
+
+  const handleResetSelectedTextElement = () => {
+    if (!selectedTextTarget) return;
+    if (selectedTextTarget.kind === 'edge-label') {
+      commitDiagram({
+        ...diagram,
+        edges: diagram.edges.map((e) =>
+          e.id === selectedTextTarget.edgeId
+            ? { ...e, labelFontSize: undefined, labelOpacity: undefined }
+            : e
+        ),
+      });
+      return;
+    }
+    commitDiagram({
+      ...diagram,
+      nodes: diagram.nodes.map((n) => {
+        if (n.id !== selectedTextTarget.nodeId) return n;
+        if (selectedTextTarget.kind === 'node-title') {
+          return { ...n, titleFontSize: undefined, titleOpacity: undefined };
+        }
+        return { ...n, bodyFontSize: undefined, bodyOpacity: undefined };
+      }),
     });
   };
 
@@ -890,11 +1213,14 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
     }
   }, [connectSourceId, hideConnectPreviewDom]);
 
-  // Cancel any pending RAF on unmount
+  // Cancel any pending RAF or timers on unmount
   useEffect(() => {
     return () => {
       if (rafIdRef.current !== null) {
         window.cancelAnimationFrame(rafIdRef.current);
+      }
+      if (commentHintTimerRef.current !== null) {
+        window.clearTimeout(commentHintTimerRef.current);
       }
     };
   }, []);
@@ -1029,6 +1355,15 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
       nodeEl.style.willChange = 'transform';
     }
 
+    const targetEl = e.target as HTMLElement | null;
+    const textPart = targetEl?.closest<HTMLElement>('[data-text-part]')?.dataset.textPart;
+    const clickedTextKind =
+      textPart === 'title'
+        ? ('node-title' as const)
+        : textPart === 'body'
+          ? ('node-body' as const)
+          : undefined;
+
     dragSessionRef.current = {
       mode: 'move',
       nodeId: node.id,
@@ -1040,6 +1375,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
       otherNodes,
       nodeLookup,
       hasMoved: false,
+      clickedTextKind,
     };
   };
 
@@ -1158,12 +1494,22 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
             : n
         ),
       });
+    } else if (session.mode === 'move' && session.clickedTextKind) {
+      setSelectedTextTarget({
+        kind: session.clickedTextKind,
+        nodeId: session.nodeId,
+      });
+      setFormatPanelOpen(false);
+      setCommentingNodeId(null);
+      setCommentAnchor(null);
     }
   };
 
   const handleCanvasBackgroundPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     setShowAddNodeMenu(false);
+    setCommentingNodeId(null);
+    setCommentAnchor(null);
 
     if (tool === 'pan') {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -1181,6 +1527,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedTextTarget(null);
     setEditingNodeId(null);
     setConnectSourceId(null);
     hideConnectPreviewDom();
@@ -1223,6 +1570,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
         tags: diagramToSave.tags.length > 0 ? diagramToSave.tags : ['Nutrición Clínica'],
         imageDataUrl: svgDataUrl,
         sourceImageDataUrl: activeSourceImageUrl,
+        reference: diagramToSave.reference?.trim() || undefined,
         notes: diagramToSave.notes,
         diagram: diagramToSave,
       });
@@ -1362,6 +1710,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
             setSelectedNodeId(null);
             setSelectedEdgeId(null);
             setEditingNodeId(null);
+            setContextPopoverOpen(false);
             window.setTimeout(() => fitCanvasToView(generated), 40);
           }}
         />
@@ -1372,20 +1721,136 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
           <OriginalImagePip
             imageDataUrl={activeSourceImageUrl}
             title={diagram.title}
-            className={isWalkthrough ? 'bottom-4 right-20 sm:bottom-5 sm:right-24' : 'top-4 left-4'}
+            className={
+              isWalkthrough
+                ? 'bottom-4 right-20 sm:bottom-5 sm:right-24'
+                : formatPanelOpen || activeTextInfo
+                  ? 'bottom-4 left-4'
+                  : 'top-4 left-4'
+            }
           />
 
-        {/* Contextual Selection Style Bar (Apple Freeform Style) */}
-        {!isWalkthrough && selectedNode && !editingNodeId && (
+          {/* Floating Algorithm Context / Introduction Popover */}
+          <AlgorithmContextPopover
+            open={contextPopoverOpen}
+            context={diagram.clinicalContext}
+            fallbackSubtitle={diagram.subtitle}
+            fallbackReference={diagram.reference ?? initialAlgorithm?.reference}
+            editable={!isWalkthrough}
+            onSave={handleSaveClinicalContext}
+            onClose={() => setContextPopoverOpen(false)}
+          />
+
+          {/* Floating Global Format & Color Palettes Panel */}
+          {!isWalkthrough && (
+            <EditorFormatPanel
+              open={formatPanelOpen}
+              colorMode={globalColorMode}
+              paletteId={globalPaletteId}
+              fontScale={globalFontScale}
+              onChangeColorMode={(mode) => handleUpdateGlobalFormat({ colorMode: mode })}
+              onChangePalette={(pid) => handleUpdateGlobalFormat({ paletteId: pid })}
+              onChangeFontScale={(scale) => handleUpdateGlobalFormat({ fontScale: scale })}
+              onReset={handleResetGlobalFormat}
+              onClose={() => setFormatPanelOpen(false)}
+            />
+          )}
+
+          {/* Floating Specific Selected Text Panel */}
+          {!isWalkthrough && activeTextInfo && selectedTextTarget && (
+            <SelectedTextPanel
+              open
+              kind={activeTextInfo.kind}
+              text={activeTextInfo.text}
+              fontSize={activeTextInfo.fontSize}
+              opacity={activeTextInfo.opacity}
+              onChangeText={(nextText) => {
+                updateSelectedTextTarget((curr) => {
+                  if (selectedTextTarget.kind === 'edge-label') {
+                    return {
+                      ...curr,
+                      edges: curr.edges.map((e) =>
+                        e.id === selectedTextTarget.edgeId ? { ...e, label: nextText } : e
+                      ),
+                    };
+                  }
+                  return {
+                    ...curr,
+                    nodes: curr.nodes.map((n) => {
+                      if (n.id !== selectedTextTarget.nodeId) return n;
+                      return selectedTextTarget.kind === 'node-title'
+                        ? { ...n, title: nextText }
+                        : { ...n, body: nextText };
+                    }),
+                  };
+                });
+              }}
+              onChangeFontSize={(nextSize) => {
+                updateSelectedTextTarget((curr) => {
+                  if (selectedTextTarget.kind === 'edge-label') {
+                    return {
+                      ...curr,
+                      edges: curr.edges.map((e) =>
+                        e.id === selectedTextTarget.edgeId
+                          ? { ...e, labelFontSize: nextSize }
+                          : e
+                      ),
+                    };
+                  }
+                  return {
+                    ...curr,
+                    nodes: curr.nodes.map((n) => {
+                      if (n.id !== selectedTextTarget.nodeId) return n;
+                      return selectedTextTarget.kind === 'node-title'
+                        ? { ...n, titleFontSize: nextSize }
+                        : { ...n, bodyFontSize: nextSize };
+                    }),
+                  };
+                });
+              }}
+              onChangeOpacity={(nextOpacity) => {
+                updateSelectedTextTarget((curr) => {
+                  if (selectedTextTarget.kind === 'edge-label') {
+                    return {
+                      ...curr,
+                      edges: curr.edges.map((e) =>
+                        e.id === selectedTextTarget.edgeId
+                          ? { ...e, labelOpacity: nextOpacity }
+                          : e
+                      ),
+                    };
+                  }
+                  return {
+                    ...curr,
+                    nodes: curr.nodes.map((n) => {
+                      if (n.id !== selectedTextTarget.nodeId) return n;
+                      return selectedTextTarget.kind === 'node-title'
+                        ? { ...n, titleOpacity: nextOpacity }
+                        : { ...n, bodyOpacity: nextOpacity };
+                    }),
+                  };
+                });
+              }}
+              onDuplicate={handleDuplicateSelectedTextElement}
+              onDelete={handleDeleteSelectedTextElement}
+              onReset={handleResetSelectedTextElement}
+              onClose={() => setSelectedTextTarget(null)}
+            />
+          )}
+
+          {/* Contextual Selection Style Bar (Bottom-Centered) */}
+          {!isWalkthrough && selectedNode && !editingNodeId && (
           <div
             role="region"
             aria-label="Propiedades del nodo seleccionado"
             data-testid="node-inspector"
-            className="mac-toast-in absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-[#E5E5EA] mac-glass-strong px-3 py-1.5 mac-dock-shadow"
+            onPointerDown={(e) => e.stopPropagation()}
+            className="mac-toast-in absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-[#E5E5EA] mac-glass-strong px-3 py-1.5 mac-dock-shadow"
           >
             <div className="flex items-center gap-1" role="group" aria-label="Color del nodo">
               {(Object.keys(NODE_TONE_STYLES) as NodeTone[]).map((toneKey) => {
                 const spec = NODE_TONE_STYLES[toneKey];
+                const resolved = resolveNodeColors(toneKey, globalPaletteId, globalColorMode);
                 const active = selectedNode.tone === toneKey;
                 return (
                   <button
@@ -1399,12 +1864,12 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                   >
                     <span
                       style={{
-                        backgroundColor: spec.swatch,
+                        backgroundColor: resolved.fill,
                         boxShadow: active
                           ? '0 0 0 2px #FFFFFF, 0 0 0 3.5px #0071E3'
-                          : 'inset 0 0 0 1px rgba(0,0,0,0.16)',
+                          : `inset 0 0 0 1.5px ${resolved.stroke}`,
                       }}
-                      className="h-4 w-4 rounded-full"
+                      className="h-4.5 w-4.5 rounded-full"
                     />
                   </button>
                 );
@@ -1413,33 +1878,42 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
             <div className="h-5 w-px bg-[#D1D1D6]" aria-hidden="true" />
 
-            <div className="flex items-center gap-1" role="group" aria-label="Forma del nodo">
-              {(['process', 'decision', 'pill'] as NodeShape[]).map((shapeKey) => (
-                <button
-                  key={shapeKey}
-                  type="button"
-                  onClick={() => handleUpdateSelectedNode({ shape: shapeKey })}
-                  aria-pressed={selectedNode.shape === shapeKey}
-                  className={`rounded-lg px-2.5 py-1 text-[12px] font-medium transition-colors whitespace-nowrap ${
-                    selectedNode.shape === shapeKey
-                      ? 'bg-[#1D1D1F] text-white'
-                      : 'text-[#1D1D1F] hover:bg-white/90'
-                  }`}
-                >
+            <select
+              aria-label="Forma del cuadro"
+              value={selectedNode.shape}
+              onChange={(e) => handleUpdateSelectedNode({ shape: e.target.value as NodeShape })}
+              className="h-7 rounded-lg border border-[#E5E5EA] bg-white px-2 text-[12px] font-medium text-[#1D1D1F] focus:border-[#0071E3] focus:outline-none"
+            >
+              {(
+                [
+                  'oval',
+                  'process',
+                  'diamond',
+                  'pill',
+                  'parallelogram',
+                  'hexagon',
+                  'block-arrow',
+                  'thin-arrow',
+                  'double-arrow',
+                  'decision',
+                ] as NodeShape[]
+              ).map((shapeKey) => (
+                <option key={shapeKey} value={shapeKey}>
                   {SHAPE_LABELS[shapeKey]}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           </div>
         )}
 
-        {/* Contextual Connector Editor Bar */}
+        {/* Contextual Connector Editor Bar (Bottom-Centered) */}
         {!isWalkthrough && selectedEdge && (
           <div
             role="region"
             aria-label="Propiedades del conector seleccionado"
             data-testid="edge-inspector"
-            className="mac-toast-in absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-[#E5E5EA] mac-glass-strong px-3 py-1.5 mac-dock-shadow"
+            onPointerDown={(e) => e.stopPropagation()}
+            className="mac-toast-in absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-[#E5E5EA] mac-glass-strong px-3 py-1.5 mac-dock-shadow"
           >
             <input
               type="text"
@@ -1468,9 +1942,16 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
           </div>
         )}
 
+        {/* Subtle Hint if User Clicks Comment Button Without Selecting a Node */}
+        {!isWalkthrough && commentHintVisible && (
+          <div className="mac-toast-in pointer-events-none absolute bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-xl border border-[#0071E3]/30 bg-[#F0F7FF]/95 px-4 py-1.5 text-[12.5px] font-medium text-[#0C4A6E] shadow-xs whitespace-nowrap">
+            Selecciona un cuadro y luego pulsa el ícono de comentario para añadirle una nota
+          </div>
+        )}
+
         {/* Connect Mode Subtle Hint Banner */}
-        {!isWalkthrough && tool === 'connect' && !selectedEdge && !selectedNode && (
-          <div className="mac-toast-in pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-xl border border-[#0071E3]/30 bg-[#F0F7FF]/95 px-4 py-1.5 text-[12.5px] font-medium text-[#0C4A6E] shadow-xs whitespace-nowrap">
+        {!isWalkthrough && tool === 'connect' && !selectedEdge && !selectedNode && !commentHintVisible && (
+          <div className="mac-toast-in pointer-events-none absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-xl border border-[#0071E3]/30 bg-[#F0F7FF]/95 px-4 py-1.5 text-[12.5px] font-medium text-[#0C4A6E] shadow-xs whitespace-nowrap">
             {connectSourceId
               ? 'Haz clic o suelta sobre el cuadro de destino para crear la flecha'
               : `Modo conectar (${EDGE_STYLE_LABELS[connectStyle]}): haz clic o arrastra desde un cuadro`}
@@ -1524,78 +2005,40 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
               viewBox={`${svgBounds.x} ${svgBounds.y} ${svgBounds.width} ${svgBounds.height}`}
             >
               <defs>
-                <marker
-                  id="ff-arrow-gray"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#6E6E73"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="ff-arrow-green"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#15803D"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="ff-arrow-amber"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#B45309"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
-                <marker
-                  id="ff-arrow-blue"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path
-                    d="M 1 1.5 L 8.5 5 L 1 8.5"
-                    fill="none"
-                    stroke="#0071E3"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </marker>
+                {Array.from(
+                  new Set<string>([
+                    '#0071E3',
+                    '#6E6E73',
+                    '#15803D',
+                    '#B45309',
+                    ...diagram.edges.map((edge) => {
+                      const g = edgeGeometries.get(edge.id);
+                      return g
+                        ? resolveEdgeColor(g.strokeColor, globalPaletteId, globalColorMode)
+                        : '#6E6E73';
+                    }),
+                  ])
+                ).map((hex) => (
+                  <marker
+                    key={hex}
+                    id={`ff-arrow-${hex.replace('#', '')}`}
+                    viewBox="0 0 10 10"
+                    refX="8"
+                    refY="5"
+                    markerWidth="7"
+                    markerHeight="7"
+                    orient="auto-start-reverse"
+                  >
+                    <path
+                      d="M 1 1.5 L 8.5 5 L 1 8.5"
+                      fill="none"
+                      stroke={hex}
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </marker>
+                ))}
               </defs>
 
               {/* Edges */}
@@ -1612,22 +2055,20 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                   walkthroughSelectableEdgeIds.has(edge.id);
                 const isSelectableEdge = isCurrentChoiceEdge || isAlternativeBranchEdge;
 
+                const themedStrokeColor = resolveEdgeColor(
+                  geom.strokeColor,
+                  globalPaletteId,
+                  globalColorMode
+                );
                 const strokeColor =
                   isSelected ||
                   (isVisitedEdge && (geom.strokeColor === '#6E6E73' || geom.strokeColor === '#8E8E93'))
                     ? '#0071E3'
                     : isCurrentChoiceEdge && geom.strokeColor === '#6E6E73'
                       ? '#0071E3'
-                      : geom.strokeColor;
+                      : themedStrokeColor;
 
-                const markerId =
-                  strokeColor === '#0071E3'
-                    ? 'ff-arrow-blue'
-                    : strokeColor === '#15803D'
-                      ? 'ff-arrow-green'
-                      : strokeColor === '#B45309'
-                        ? 'ff-arrow-amber'
-                        : 'ff-arrow-gray';
+                const markerId = `ff-arrow-${strokeColor.replace('#', '')}`;
 
                 const edgeOpacity = !isWalkthrough
                   ? 1
@@ -1737,7 +2178,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                 strokeWidth="2.4"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                markerEnd="url(#ff-arrow-blue)"
+                markerEnd="url(#ff-arrow-0071E3)"
                 style={{ display: 'none' }}
               />
 
@@ -1795,6 +2236,19 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                     ? 0.52
                     : 0.18;
 
+              const badgeColors = resolveEdgeBadgeColors(
+                geom.strokeColor,
+                globalPaletteId,
+                globalColorMode
+              );
+              const edgeLabelFontSize = Number(
+                ((edge.labelFontSize ?? DEFAULT_EDGE_LABEL_FONT_SIZE) * globalFontScale).toFixed(2)
+              );
+              const edgeCustomOpacity =
+                typeof edge.labelOpacity === 'number' && Number.isFinite(edge.labelOpacity)
+                  ? edge.labelOpacity
+                  : 1;
+
               return (
                 <button
                   key={`label-${edge.id}`}
@@ -1820,14 +2274,26 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                     }
                     setSelectedEdgeId(edge.id);
                     setSelectedNodeId(null);
+                    setSelectedTextTarget({ kind: 'edge-label', edgeId: edge.id });
+                    setFormatPanelOpen(false);
+                    setCommentingNodeId(null);
+                    setCommentAnchor(null);
                   }}
                   style={{
                     left: 0,
                     top: 0,
                     transform: `translate3d(${geom.labelX}px, ${geom.labelY}px, 0) translate(-50%, -50%)`,
-                    opacity: labelOpacity,
+                    opacity: labelOpacity * edgeCustomOpacity,
+                    fontSize: `${edgeLabelFontSize}px`,
+                    ...(isWalkthrough || isSelected
+                      ? {}
+                      : {
+                          backgroundColor: badgeColors.fill,
+                          color: badgeColors.text,
+                          borderColor: '#FFFFFF',
+                        }),
                   }}
-                  className={`absolute inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11.5px] font-semibold transition-[opacity,color,background-color,border-color] duration-150 whitespace-nowrap ${
+                  className={`absolute inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-semibold transition-[opacity,color,background-color,border-color] duration-150 whitespace-nowrap ${
                     isCurrentChoiceEdge
                       ? 'cursor-pointer border-[#0071E3] bg-white text-[#0071E3] shadow-[0_4px_14px_-4px_rgba(0,113,227,0.38)] ring-2 ring-[#0071E3]/15 hover:bg-[#0071E3] hover:text-white'
                       : isAlternativeBranchEdge
@@ -1840,11 +2306,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                               : 'border-[#0071E3] bg-[#0071E3] text-white shadow-xs'
                           : isSelected
                             ? 'border-[#0071E3] bg-[#F0F7FF] text-[#0071E3]'
-                            : geom.strokeColor === '#15803D'
-                              ? 'border-white bg-[#DCFCE7] text-[#166534]'
-                              : geom.strokeColor === '#B45309'
-                                ? 'border-white bg-[#FEF3C7] text-[#92400E]'
-                                : 'border-white bg-[#F5F5F7] text-[#1D1D1F]'
+                            : ''
                   }`}
                 >
                   {isVisitedEdge && <Check className="h-3 w-3 shrink-0" aria-hidden="true" />}
@@ -1858,13 +2320,32 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
             {/* Interactive Nodes Layer */}
             {renderedNodes.map((node) => {
-              const toneStyle = NODE_TONE_STYLES[node.tone] ?? NODE_TONE_STYLES.white;
+              const toneStyle = resolveNodeColors(node.tone, globalPaletteId, globalColorMode);
+              const metrics =
+                adaptiveMetricsMap.get(node.id) ??
+                computeAdaptiveNodeMetrics(node, globalFontScale);
               const isSelected = !isWalkthrough && node.id === selectedNodeId;
               const isConnectSource = !isWalkthrough && node.id === connectSourceId;
               const isConnectTargetHover = !isWalkthrough && node.id === connectHoverTargetId;
               const isEditing = !isWalkthrough && node.id === editingNodeId;
+              const usesCustomVector = isCustomSvgShape(node.shape);
+              const innerPadding = getShapeInnerPadding(node.shape);
+              const hasComment = Boolean(node.comment?.trim());
+              const isTitleFocused =
+                !isWalkthrough &&
+                selectedTextTarget?.kind === 'node-title' &&
+                selectedTextTarget.nodeId === node.id;
+              const isBodyFocused =
+                !isWalkthrough &&
+                selectedTextTarget?.kind === 'node-body' &&
+                selectedTextTarget.nodeId === node.id;
+
               const borderRadius =
-                node.shape === 'pill' ? `${Math.round(node.height / 2)}px` : node.shape === 'decision' ? '18px' : '14px';
+                node.shape === 'pill'
+                  ? '9999px'
+                  : node.shape === 'decision'
+                    ? '18px'
+                    : '14px';
 
               const stepIndex = walkthroughStepIndexByNodeId.get(node.id);
               const isVisitedNode = isWalkthrough && stepIndex !== undefined;
@@ -1894,6 +2375,21 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                       ? 0.34
                       : 0.2;
 
+              const resolvedBorderColor =
+                isCurrentNode || isSelected || isConnectSource || isConnectTargetHover || isVisitedNode
+                  ? '#0071E3'
+                  : toneStyle.stroke;
+
+              const resolvedBorderWidth =
+                isCurrentNode ||
+                isVisitedNode ||
+                isSelected ||
+                isConnectSource ||
+                isConnectTargetHover ||
+                node.shape === 'decision'
+                  ? 2
+                  : 1.5;
+
               return (
                 <div
                   key={node.id}
@@ -1905,6 +2401,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                     }
                   }}
                   data-testid={`diagram-node-${node.id}`}
+                  data-shape={node.shape}
                   data-walkthrough-state={
                     !isWalkthrough
                       ? undefined
@@ -1930,35 +2427,36 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                     transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
                     width: node.width,
                     height: node.height,
-                    borderRadius,
+                    paddingLeft: `${innerPadding.px}px`,
+                    paddingRight: `${innerPadding.px}px`,
+                    paddingTop: `${innerPadding.py}px`,
+                    paddingBottom: `${innerPadding.py}px`,
                     opacity: nodeOpacity,
-                    backgroundColor: toneStyle.fill,
-                    borderColor:
-                      isCurrentNode || isSelected || isConnectSource || isConnectTargetHover
-                        ? '#0071E3'
-                        : isVisitedNode
-                          ? '#0071E3'
-                          : toneStyle.stroke,
-                    borderWidth:
-                      isCurrentNode ||
-                      isVisitedNode ||
-                      isSelected ||
-                      isConnectSource ||
-                      isConnectTargetHover ||
-                      node.shape === 'decision'
-                        ? 2
-                        : 1.5,
-                    boxShadow: isConnectTargetHover
-                      ? '0 0 0 4px rgba(0, 113, 227, 0.28), 0 12px 26px -10px rgba(0, 113, 227, 0.25)'
-                      : isCurrentNode
-                        ? '0 0 0 4px rgba(0, 113, 227, 0.22), 0 14px 30px -12px rgba(0, 113, 227, 0.28)'
-                        : isVisitedNode
-                          ? '0 8px 22px -10px rgba(0, 113, 227, 0.18)'
-                          : isSelected || isConnectSource
-                            ? '0 0 0 3px rgba(0, 113, 227, 0.16), 0 10px 24px -10px rgba(29,29,31,0.14)'
-                            : '0 2px 8px -4px rgba(29,29,31,0.08)',
+                    ...(usesCustomVector
+                      ? {
+                          backgroundColor: 'transparent',
+                          borderColor: 'transparent',
+                          borderWidth: 0,
+                        }
+                      : {
+                          borderRadius,
+                          backgroundColor: toneStyle.fill,
+                          borderColor: resolvedBorderColor,
+                          borderWidth: resolvedBorderWidth,
+                          boxShadow: isConnectTargetHover
+                            ? '0 0 0 4px rgba(0, 113, 227, 0.28), 0 12px 26px -10px rgba(0, 113, 227, 0.25)'
+                            : isCurrentNode
+                              ? '0 0 0 4px rgba(0, 113, 227, 0.22), 0 14px 30px -12px rgba(0, 113, 227, 0.28)'
+                              : isVisitedNode
+                                ? '0 8px 22px -10px rgba(0, 113, 227, 0.18)'
+                                : isSelected || isConnectSource
+                                  ? '0 0 0 3px rgba(0, 113, 227, 0.16), 0 10px 24px -10px rgba(29,29,31,0.14)'
+                                  : '0 2px 8px -4px rgba(29,29,31,0.08)',
+                        }),
                   }}
-                  className={`absolute flex flex-col items-center justify-center border px-4 py-2.5 text-center transition-[opacity,box-shadow,border-color,background-color] duration-150 ${
+                  className={`group absolute flex flex-col items-center justify-center text-center transition-[opacity,box-shadow,border-color,background-color] duration-150 ${
+                    usesCustomVector ? '' : 'border'
+                  } ${
                     isWalkthrough
                       ? isVisitedNode || isSelectableTarget
                         ? 'cursor-pointer'
@@ -1970,15 +2468,41 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                           : 'cursor-move'
                   }`}
                 >
+                  {/* Custom Geometric Vector Shape Backdrop */}
+                  {usesCustomVector && (
+                    <NodeShapeBackdrop
+                      shape={node.shape}
+                      width={node.width}
+                      height={node.height}
+                      fill={toneStyle.fill}
+                      stroke={resolvedBorderColor}
+                      strokeWidth={resolvedBorderWidth}
+                      highlightRing={
+                        isSelected || isCurrentNode || isConnectSource || isConnectTargetHover
+                      }
+                    />
+                  )}
+
                   {node.shape === 'decision' && (
                     <span
                       style={{
                         borderColor: toneStyle.stroke,
                         color: toneStyle.titleColor,
                       }}
-                      className="pointer-events-none absolute -top-2.5 left-4 rounded-full border bg-white px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em]"
+                      className="pointer-events-none absolute -top-2.5 left-4 z-10 rounded-full border bg-white px-2 py-0.5 text-[9.5px] font-bold tracking-[0.05em]"
                     >
                       DECISIÓN
+                    </span>
+                  )}
+
+                  {/* Passive Saved Comment Indicator (only shown on nodes that already have a saved comment) */}
+                  {hasComment && !isEditing && (
+                    <span
+                      data-testid={`node-comment-badge-${node.id}`}
+                      title={`Comentario: ${node.comment}`}
+                      className="pointer-events-none absolute -left-2 -top-2 z-20 flex h-5 w-5 items-center justify-center rounded-full border border-[#0071E3]/40 bg-white text-[#0071E3] shadow-xs"
+                    >
+                      <MessageSquare className="h-2.5 w-2.5" aria-hidden="true" />
                     </span>
                   )}
 
@@ -1986,7 +2510,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                   {isVisitedNode && stepIndex !== undefined && (
                     <span
                       aria-hidden="true"
-                      className={`pointer-events-none absolute -right-2.5 -top-2.5 flex h-6 w-6 items-center justify-center rounded-full font-mono-tabular text-[11px] font-bold shadow-sm ${
+                      className={`pointer-events-none absolute -right-2.5 -top-2.5 z-20 flex h-6 w-6 items-center justify-center rounded-full font-mono-tabular text-[11px] font-bold shadow-sm ${
                         isCurrentNode
                           ? 'bg-[#0071E3] text-white'
                           : 'border border-[#0071E3]/40 bg-white text-[#0071E3]'
@@ -1999,7 +2523,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                   {isEditing ? (
                     <div
                       onPointerDown={(e) => e.stopPropagation()}
-                      className="flex h-full w-full flex-col justify-center gap-1"
+                      className="relative z-10 flex h-full w-full flex-col justify-center gap-1"
                     >
                       <input
                         type="text"
@@ -2041,17 +2565,35 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                       />
                     </div>
                   ) : (
-                    <div className="pointer-events-none flex flex-col items-center justify-center gap-1 overflow-hidden">
+                    <div className="relative z-10 flex w-full flex-col items-center justify-center gap-1 overflow-hidden">
                       <p
-                        style={{ color: toneStyle.titleColor }}
-                        className="text-[14.5px] font-bold leading-snug tracking-[-0.01em]"
+                        data-text-part="title"
+                        style={{
+                          color: toneStyle.titleColor,
+                          fontSize: `${metrics.titleFontSize}px`,
+                          opacity: metrics.titleOpacity,
+                        }}
+                        className={`rounded px-1 font-bold leading-snug tracking-[-0.01em] transition-shadow ${
+                          !isWalkthrough && tool === 'select'
+                            ? 'cursor-text hover:ring-1 hover:ring-[#0071E3]/45'
+                            : 'pointer-events-none'
+                        } ${isTitleFocused ? 'ring-1.5 ring-[#0071E3] bg-[#0071E3]/6' : ''}`}
                       >
                         {node.title}
                       </p>
                       {node.body && (
                         <p
-                          style={{ color: toneStyle.bodyColor }}
-                          className="text-[12.5px] font-medium leading-snug"
+                          data-text-part="body"
+                          style={{
+                            color: toneStyle.bodyColor,
+                            fontSize: `${metrics.bodyFontSize}px`,
+                            opacity: metrics.bodyOpacity,
+                          }}
+                          className={`rounded px-1 font-medium leading-snug transition-shadow ${
+                            !isWalkthrough && tool === 'select'
+                              ? 'cursor-text hover:ring-1 hover:ring-[#0071E3]/45'
+                              : 'pointer-events-none'
+                          } ${isBodyFocused ? 'ring-1.5 ring-[#0071E3] bg-[#0071E3]/6' : ''}`}
                         >
                           {node.body}
                         </p>
@@ -2059,7 +2601,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                     </div>
                   )}
 
-                  {/* Quick Drag-to-Connect Handles when Selected in Edit Mode */}
+                  {/* Quick Drag-to-Connect Handles anchored at exact geometric edge midpoints */}
                   {isSelected && !isEditing && tool !== 'pan' && (
                     <>
                       <button
@@ -2067,45 +2609,67 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
                         aria-label="Arrastrar para conectar desde arriba"
                         title="Arrastra hacia otro cuadro para conectar"
                         onPointerDown={(e) => handleQuickPortPointerDown(e, node)}
-                        className="absolute -top-2 left-1/2 flex h-4 w-4 -translate-x-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
+                        className="absolute left-1/2 top-0 z-20 flex h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
                       />
                       <button
                         type="button"
                         aria-label="Arrastrar para conectar desde abajo"
                         title="Arrastra hacia otro cuadro para conectar"
                         onPointerDown={(e) => handleQuickPortPointerDown(e, node)}
-                        className="absolute -bottom-2 left-1/2 flex h-4 w-4 -translate-x-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
+                        className="absolute bottom-0 left-1/2 z-20 flex h-3.5 w-3.5 -translate-x-1/2 translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
                       />
                       <button
                         type="button"
                         aria-label="Arrastrar para conectar desde la derecha"
                         title="Arrastra hacia otro cuadro para conectar"
                         onPointerDown={(e) => handleQuickPortPointerDown(e, node)}
-                        className="absolute -right-2 top-1/2 flex h-4 w-4 -translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
+                        className="absolute right-0 top-1/2 z-20 flex h-3.5 w-3.5 translate-x-1/2 -translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
                       />
                       <button
                         type="button"
                         aria-label="Arrastrar para conectar desde la izquierda"
                         title="Arrastra hacia otro cuadro para conectar"
                         onPointerDown={(e) => handleQuickPortPointerDown(e, node)}
-                        className="absolute -left-2 top-1/2 flex h-4 w-4 -translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
+                        className="absolute left-0 top-1/2 z-20 flex h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-crosshair items-center justify-center rounded-full border-2 border-[#0071E3] bg-white shadow-xs hover:scale-125 hover:bg-[#0071E3]"
                       />
                     </>
                   )}
 
-                  {/* Bottom-Right Resize Handle when Selected */}
+                  {/* Bottom-Right Resize Handle anchored exactly at corner */}
                   {isSelected && !isEditing && (
                     <div
                       role="separator"
                       aria-label="Redimensionar cuadro"
                       onPointerDown={(e) => handleResizePointerDown(e, node)}
-                      className="absolute -bottom-1.5 -right-1.5 h-3.5 w-3.5 cursor-nwse-resize rounded-full border-2 border-[#1D1D1F] bg-white shadow-xs hover:scale-115"
+                      className="absolute bottom-0 right-0 z-20 h-3.5 w-3.5 translate-x-1/2 translate-y-1/2 cursor-nwse-resize rounded-full border-2 border-[#1D1D1F] bg-white shadow-xs hover:scale-115"
                     />
                   )}
                 </div>
               );
             })}
           </div>
+
+          {/* Floating Section Comment Composer anchored cleanly in viewport coordinates */}
+          {!isWalkthrough && commentingNodeId && commentAnchor && (() => {
+            const targetNode = diagram.nodes.find((n) => n.id === commentingNodeId);
+            if (!targetNode) return null;
+            return (
+              <div
+                style={{ left: commentAnchor.left, top: commentAnchor.top }}
+                className="absolute z-40"
+              >
+                <NodeCommentPopover
+                  nodeTitle={targetNode.title}
+                  initialComment={targetNode.comment ?? ''}
+                  onSave={(comment) => handleSaveNodeComment(targetNode.id, comment)}
+                  onCancel={() => {
+                    setCommentingNodeId(null);
+                    setCommentAnchor(null);
+                  }}
+                />
+              </div>
+            );
+          })()}
         </div>
 
         {/* Right-Side Vertical Floating macOS Dock (Walkthrough Navigation vs Editor Tools) */}
@@ -2196,6 +2760,27 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
             <button
               type="button"
+              onClick={() => setContextPopoverOpen((v) => !v)}
+              aria-pressed={contextPopoverOpen}
+              aria-label="Contexto del algoritmo"
+              title="Contexto del algoritmo"
+              className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+                contextPopoverOpen
+                  ? 'bg-[#0071E3] text-white'
+                  : 'text-[#1D1D1F] hover:bg-white/90'
+              }`}
+            >
+              <BookOpen className="h-4 w-4" aria-hidden="true" />
+              {!contextPopoverOpen && Boolean(diagram.clinicalContext?.summary) && (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#0071E3]"
+                />
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setWalkthroughPanelOpen((v) => !v)}
               aria-pressed={walkthroughPanelOpen}
               aria-label={walkthroughPanelOpen ? 'Ocultar Recorrido Guiado' : 'Mostrar Recorrido Guiado'}
@@ -2257,53 +2842,26 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
 
           <div className="my-0.5 h-px w-6 bg-[#D1D1D6]" aria-hidden="true" />
 
-          {/* + Nodo with Quick Shape Popover opening to the left */}
+          {/* Formas Button with 3x3 Floating Shapes Popover opening to the left */}
           <div className="relative">
             <button
               type="button"
+              data-testid="shapes-toolbar-btn"
               onClick={() => setShowAddNodeMenu((v) => !v)}
               aria-expanded={showAddNodeMenu}
-              aria-label="Agregar nodo"
-              title="Agregar nodo"
+              aria-label="Agregar forma al algoritmo"
+              title="Formas"
               className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
                 showAddNodeMenu
                   ? 'bg-[#1D1D1F] text-white'
                   : 'text-[#1D1D1F] hover:bg-white/90'
               }`}
             >
-              <Plus className="h-4 w-4" aria-hidden="true" />
+              <Square className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
             </button>
 
             {showAddNodeMenu && (
-              <div
-                role="menu"
-                className="mac-toast-in absolute right-full top-1/2 mr-3 flex min-w-[172px] -translate-y-1/2 flex-col gap-1 rounded-xl border border-[#E5E5EA] mac-glass-strong p-1.5 mac-dock-shadow"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleAddNode('process')}
-                  className="rounded-lg px-3 py-1.5 text-left text-[12.5px] font-medium text-[#1D1D1F] hover:bg-white"
-                >
-                  Bloque de proceso
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleAddNode('decision')}
-                  className="rounded-lg px-3 py-1.5 text-left text-[12.5px] font-medium text-[#1D1D1F] hover:bg-white"
-                >
-                  Criterio de decisión
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleAddNode('pill')}
-                  className="rounded-lg px-3 py-1.5 text-left text-[12.5px] font-medium text-[#1D1D1F] hover:bg-white"
-                >
-                  Píldora Inicio / Fin
-                </button>
-              </div>
+              <EditorShapesPopover onSelectShape={handleAddNode} />
             )}
           </div>
 
@@ -2356,6 +2914,94 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
               </div>
             )}
           </div>
+
+          {/* Comentario en recuadro seleccionado (Right Vertical Toolbar) */}
+          <button
+            type="button"
+            data-testid="comment-toolbar-btn"
+            onClick={handleToolbarCommentClick}
+            aria-pressed={Boolean(commentingNodeId)}
+            aria-label="Agregar o editar comentario del cuadro seleccionado"
+            title={
+              selectedNode
+                ? selectedNode.comment
+                  ? 'Editar comentario del cuadro seleccionado'
+                  : 'Agregar comentario al cuadro seleccionado'
+                : 'Selecciona un cuadro para agregar un comentario'
+            }
+            className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+              commentingNodeId
+                ? 'bg-[#0071E3] text-white'
+                : selectedNode?.comment
+                  ? 'bg-[#EFF6FF] text-[#0071E3] hover:bg-[#DBEAFE]'
+                  : selectedNode
+                    ? 'text-[#1D1D1F] hover:bg-white/90'
+                    : 'text-[#8E8E93] hover:bg-white/90 hover:text-[#1D1D1F]'
+            }`}
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          {/* Contexto / Introducción del Algoritmo (Floating Popover Trigger) */}
+          <button
+            type="button"
+            data-testid="context-toolbar-btn"
+            onClick={() => {
+              setContextPopoverOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setFormatPanelOpen(false);
+                  setShowAddNodeMenu(false);
+                  setCommentingNodeId(null);
+                  setCommentAnchor(null);
+                }
+                return next;
+              });
+            }}
+            aria-pressed={contextPopoverOpen}
+            aria-label="Ver o editar contexto del algoritmo"
+            title="Contexto del algoritmo"
+            className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+              contextPopoverOpen
+                ? 'bg-[#0071E3] text-white'
+                : 'text-[#1D1D1F] hover:bg-white/90'
+            }`}
+          >
+            <BookOpen className="h-4 w-4" aria-hidden="true" />
+            {!contextPopoverOpen && Boolean(diagram.clinicalContext?.summary) && (
+              <span
+                aria-hidden="true"
+                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#0071E3]"
+              />
+            )}
+          </button>
+
+          {/* Formato Global & Paletas de Colores Button (Three Dots) */}
+          <button
+            type="button"
+            data-testid="format-toolbar-btn"
+            onClick={() => {
+              setFormatPanelOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setSelectedTextTarget(null);
+                  setShowAddNodeMenu(false);
+                  setContextPopoverOpen(false);
+                }
+                return next;
+              });
+            }}
+            aria-pressed={formatPanelOpen}
+            aria-label="Formato global y paletas de colores"
+            title="Formato y paletas de colores"
+            className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+              formatPanelOpen
+                ? 'bg-[#1D1D1F] text-white'
+                : 'text-[#1D1D1F] hover:bg-white/90'
+            }`}
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+          </button>
 
           {/* Auto-Layout Button */}
           <button

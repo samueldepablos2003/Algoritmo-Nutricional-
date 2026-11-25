@@ -15,9 +15,28 @@ export interface HighlightStroke {
   points: NormalizedPoint[];
 }
 
-export type NodeShape = 'process' | 'decision' | 'pill';
+export type NodeShape =
+  | 'process'
+  | 'decision'
+  | 'pill'
+  | 'oval'
+  | 'diamond'
+  | 'parallelogram'
+  | 'hexagon'
+  | 'block-arrow'
+  | 'thin-arrow'
+  | 'double-arrow';
+
 export type NodeTone = 'white' | 'gray' | 'mint' | 'amber' | 'rose' | 'blue';
 export type EdgeStyle = 'solid' | 'dashed' | 'straight';
+export type DiagramColorMode = 'color' | 'grayscale';
+export type DiagramPaletteId =
+  | 'original'
+  | 'tech-blue'
+  | 'fresh-green'
+  | 'elegant-purple'
+  | 'warm-amber'
+  | 'soft-rose';
 
 export interface DiagramNode {
   id: string;
@@ -29,6 +48,16 @@ export interface DiagramNode {
   body: string;
   shape: NodeShape;
   tone: NodeTone;
+  /** Optional clinical comment attached to this section */
+  comment?: string;
+  /** Optional custom font size (px) for the node title */
+  titleFontSize?: number;
+  /** Optional custom font size (px) for the node body */
+  bodyFontSize?: number;
+  /** Optional opacity (0–1) for the node title */
+  titleOpacity?: number;
+  /** Optional opacity (0–1) for the node body */
+  bodyOpacity?: number;
 }
 
 export interface DiagramEdge {
@@ -37,6 +66,23 @@ export interface DiagramEdge {
   to: string;
   label: string;
   style: EdgeStyle;
+  /** Optional custom font size (px) for the connector label */
+  labelFontSize?: number;
+  /** Optional opacity (0–1) for the connector label */
+  labelOpacity?: number;
+}
+
+export interface DiagramClinicalContext {
+  /** Concise clinical introduction explaining what the algorithm is about */
+  summary: string;
+  /** Target patient population identified in the text or file */
+  targetPopulation?: string;
+  /** Clinical care setting (e.g., UCI, Hospitalización, Perioperatorio) */
+  clinicalSetting?: string;
+  /** Medical-nutritional guideline or protocol identified (e.g., ESPEN, ASPEN, ERAS) */
+  protocolSource?: string;
+  /** Main therapeutic or nutritional goal of the protocol */
+  primaryObjective?: string;
 }
 
 export interface EditableDiagram {
@@ -46,8 +92,18 @@ export interface EditableDiagram {
   notes: string;
   nodes: DiagramNode[];
   edges: DiagramEdge[];
+  /** Extracted clinical introduction & protocol context identifying what the algorithm covers */
+  clinicalContext?: DiagramClinicalContext;
+  /** Bibliographic or clinical guideline reference extracted from source */
+  reference?: string;
   /** Original source image data URL when digitized from an uploaded image */
   sourceImageDataUrl?: string;
+  /** Global color mode ('color' | 'grayscale') */
+  colorMode?: DiagramColorMode;
+  /** Preset global color palette applied to the entire algorithm */
+  paletteId?: DiagramPaletteId;
+  /** Global adaptive font scale multiplier (default 1, range 0.75–1.6) */
+  fontScale?: number;
 }
 
 export interface AlgorithmItem {

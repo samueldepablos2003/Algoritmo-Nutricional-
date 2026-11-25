@@ -281,7 +281,9 @@ export default function App() {
         existing?.groupLabel;
 
       const resolvedReference =
-        payload.reference !== undefined ? payload.reference : existing?.reference;
+        payload.reference !== undefined
+          ? payload.reference
+          : payload.diagram?.reference ?? existing?.reference;
 
       const resolvedDiagram = payload.diagram
         ? payload.diagram
@@ -360,6 +362,8 @@ export default function App() {
         ? {
             ...existing,
             title: digitized.title,
+            ...(digitized.subtitle ? { subtitle: digitized.subtitle } : {}),
+            ...(digitized.reference ? { reference: digitized.reference } : {}),
             tags: digitized.tags,
             notes: digitized.notes,
             sourceImageDataUrl: payload.imageDataUrl,
@@ -369,6 +373,8 @@ export default function App() {
         : {
             id: '',
             title: digitized.title,
+            ...(digitized.subtitle ? { subtitle: digitized.subtitle } : {}),
+            ...(digitized.reference ? { reference: digitized.reference } : {}),
             tags: digitized.tags,
             imageDataUrl: payload.imageDataUrl,
             sourceImageDataUrl: payload.imageDataUrl,
@@ -404,6 +410,8 @@ export default function App() {
         const updatedDraft: AlgorithmItem = {
           ...target,
           title: digitized.title,
+          ...(digitized.subtitle ? { subtitle: digitized.subtitle } : {}),
+          ...(digitized.reference && !target.reference ? { reference: digitized.reference } : {}),
           tags: digitized.tags,
           notes: digitized.notes,
           sourceImageDataUrl: target.sourceImageDataUrl ?? target.imageDataUrl,

@@ -2,8 +2,15 @@ import type { EditableDiagram } from '../types/algorithm';
 import { normalizeTags } from './algorithmLogic';
 import { normalizeAiDiagramPayload } from './diagramEngine';
 
-const MAX_DIRECT_BASE64_LENGTH = 900 * 1024;
-const MAX_RASTER_DIMENSION = 1600;
+export const AI_CAPACITY_LIMITS = {
+  MAX_TEXT_CHARS: 150_000,
+  MAX_FILE_BYTES: 15 * 1024 * 1024,
+  MAX_IMAGE_DIMENSION: 2400,
+} as const;
+
+const MAX_DIRECT_BASE64_LENGTH = 2_000_000;
+const MAX_LOSSLESS_PNG_BASE64_LENGTH = 2_600_000;
+const MAX_RASTER_DIMENSION = AI_CAPACITY_LIMITS.MAX_IMAGE_DIMENSION;
 
 export interface PreparedGeminiImage {
   base64: string;
@@ -35,7 +42,7 @@ export async function parseApiDiagramResponse(response: Response): Promise<ApiDi
   if (response.status === 413) {
     return {
       error:
-        'La imagen o archivo es demasiado pesado para enviarlo al servidor. Intenta con una captura más ligera.',
+        'La imagen o archivo es demasiado pesado para enviarlo al servidor. Intenta con un archivo menor a 15 MB.',
     };
   }
 
@@ -66,8 +73,8 @@ export async function parseApiDiagramResponse(response: Response): Promise<ApiDi
 
 function rasterizeDataUrlToCanvas(
   dataUrl: string,
-  targetMime: 'image/png' | 'image/jpeg',
-  quality = 0.86
+  preferLosslessPng = true,
+  jpegQuality = 0.92
 ): Promise<PreparedGeminiImage> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -87,14 +94,27 @@ function rasterizeDataUrlToCanvas(
         return;
       }
 
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
 
-      const exported =
-        targetMime === 'image/jpeg'
-          ? canvas.toDataURL('image/jpeg', quality)
-          : canvas.toDataURL('image/png');
+      // Prefer lossless PNG for flowcharts & screenshots so small clinical text (≥, ≤, kcal/kg/d)
+      // and thin arrows remain razor-sharp without JPEG ringing artifacts.
+      if (preferLosslessPng) {
+        const pngDataUrl = canvas.toDataURL('image/png');
+        const pngComma = pngDataUrl.indexOf(',');
+        if (pngComma >= 0) {
+          const pngBase64 = pngDataUrl.slice(pngComma + 1);
+          if (pngBase64.length <= MAX_LOSSLESS_PNG_BASE64_LENGTH) {
+            resolve({ base64: pngBase64, mimeType: 'image/png' });
+            return;
+          }
+        }
+      }
+
+      const exported = canvas.toDataURL('image/jpeg', jpegQuality);
       const commaIdx = exported.indexOf(',');
       if (commaIdx < 0) {
         reject(new Error('No se pudo codificar la imagen para enviarla a la IA.'));
@@ -103,7 +123,7 @@ function rasterizeDataUrlToCanvas(
 
       resolve({
         base64: exported.slice(commaIdx + 1),
-        mimeType: targetMime,
+        mimeType: 'image/jpeg',
       });
     };
     img.onerror = () => {
@@ -114,9 +134,10 @@ function rasterizeDataUrlToCanvas(
 }
 
 /**
- * Extracts a compact, Gemini-compatible base64 + mimeType payload from any image data URL.
- * Automatically downscales/compresses large photos & rasterizes SVGs so the HTTP POST body stays
- * lightweight (~150KB–600KB) and fast while preserving the full original image locally.
+ * Extracts a high-clarity, Gemini-compatible base64 + mimeType payload from any image data URL.
+ * Preserves sharp PNG/WebP screenshots directly up to ~1.5 MB, and downscales oversized photos
+ * or rasterizes SVGs up to 2400px using lossless PNG first (falling back to JPEG 0.92 only for
+ * very heavy photographic captures) so micro-text and arrow labels stay crisp.
  */
 export async function prepareImageForGemini(imageDataUrl: string): Promise<PreparedGeminiImage> {
   const trimmed = imageDataUrl.trim();
@@ -131,11 +152,11 @@ export async function prepareImageForGemini(imageDataUrl: string): Promise<Prepa
     ) {
       return { base64, mimeType };
     }
-    return rasterizeDataUrlToCanvas(trimmed, 'image/jpeg', 0.86);
+    return rasterizeDataUrlToCanvas(trimmed, mimeType !== 'image/jpeg', 0.92);
   }
 
   if (trimmed.startsWith('data:image/')) {
-    return rasterizeDataUrlToCanvas(trimmed, 'image/jpeg', 0.88);
+    return rasterizeDataUrlToCanvas(trimmed, true, 0.92);
   }
 
   throw new Error('Formato de imagen no válido para digitalizar con IA.');

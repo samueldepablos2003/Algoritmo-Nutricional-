@@ -2,7 +2,11 @@ import React, { useRef, useState } from 'react';
 import { ChevronLeft, FileText, FileUp, Loader2, Sparkles, X } from 'lucide-react';
 import type { EditableDiagram } from '../types/algorithm';
 import { normalizeAiDiagramPayload } from '../utils/diagramEngine';
-import { parseApiDiagramResponse, prepareImageForGemini } from '../utils/imageDigitizer';
+import {
+  AI_CAPACITY_LIMITS,
+  parseApiDiagramResponse,
+  prepareImageForGemini,
+} from '../utils/imageDigitizer';
 
 interface GeneratorAiDrawerProps {
   visible?: boolean;
@@ -15,9 +19,16 @@ interface GeneratorAiDrawerProps {
 interface AttachedDocument {
   name: string;
   mimeType: string;
+  sizeBytes: number;
   base64?: string;
   dataUrl?: string;
   textContent?: string;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const SAMPLE_PROTOCOLS: Array<{ label: string; text: string }> = [
@@ -76,6 +87,11 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
 
   if (!visible) return null;
 
+  const combinedTextLength =
+    clinicalText.trim().length +
+    (attachedDoc?.textContent?.trim().length ? attachedDoc.textContent.trim().length + 2 : 0);
+  const exceedsTextLimit = combinedTextLength > AI_CAPACITY_LIMITS.MAX_TEXT_CHARS;
+
   const handleFileSelected = async (file: File) => {
     setError(null);
     const isPlainText =
@@ -84,17 +100,28 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
 
     try {
       if (isPlainText) {
+        if (file.size > AI_CAPACITY_LIMITS.MAX_FILE_BYTES) {
+          setError('El archivo de texto supera el límite de 15 MB.');
+          return;
+        }
         const text = await file.text();
+        if (text.trim().length > AI_CAPACITY_LIMITS.MAX_TEXT_CHARS) {
+          setError(
+            `El archivo contiene ${text.trim().length.toLocaleString('es-ES')} caracteres y supera el máximo de ${AI_CAPACITY_LIMITS.MAX_TEXT_CHARS.toLocaleString('es-ES')}.`
+          );
+          return;
+        }
         setAttachedDoc({
           name: file.name,
           mimeType: file.type || 'text/plain',
+          sizeBytes: file.size,
           textContent: text,
         });
       } else if (
         file.type === 'application/pdf' ||
         file.type.startsWith('image/')
       ) {
-        if (file.size > 15 * 1024 * 1024) {
+        if (file.size > AI_CAPACITY_LIMITS.MAX_FILE_BYTES) {
           setError('El archivo supera el límite de 15 MB.');
           return;
         }
@@ -104,11 +131,12 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
         setAttachedDoc({
           name: file.name,
           mimeType: file.type,
+          sizeBytes: file.size,
           base64: rawBase64,
           dataUrl,
         });
       } else {
-        setError('Formato no compatible. Sube un archivo TXT, Markdown, CSV, PDF o imagen.');
+        setError('Formato no compatible. Sube un archivo TXT, Markdown, CSV, PDF o imagen (PNG, JPG, WebP).');
       }
     } catch {
       setError('No se pudo leer el documento seleccionado.');
@@ -123,6 +151,13 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
 
     if (!combinedText && !attachedDoc?.base64) {
       setError('Pega un texto clínico o adjunta un protocolo para generar el algoritmo.');
+      return;
+    }
+
+    if (combinedText.length > AI_CAPACITY_LIMITS.MAX_TEXT_CHARS) {
+      setError(
+        `El texto combinado supera el máximo de ${AI_CAPACITY_LIMITS.MAX_TEXT_CHARS.toLocaleString('es-ES')} caracteres.`
+      );
       return;
     }
 
@@ -226,12 +261,22 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
 
         {/* Clinical Text Input */}
         <div className="flex flex-1 flex-col">
-          <label
-            htmlFor="ai-clinical-text"
-            className="block text-[12.5px] font-medium text-[#1D1D1F] mb-1.5"
-          >
-            Agregar texto
-          </label>
+          <div className="mb-1.5 flex items-baseline justify-between gap-2">
+            <label
+              htmlFor="ai-clinical-text"
+              className="block text-[12.5px] font-medium text-[#1D1D1F]"
+            >
+              Agregar texto
+            </label>
+            <span
+              className={`font-mono-tabular text-[11px] ${
+                exceedsTextLimit ? 'font-semibold text-[#B91C1C]' : 'text-[#8E8E93]'
+              }`}
+            >
+              {combinedTextLength.toLocaleString('es-ES')} /{' '}
+              {AI_CAPACITY_LIMITS.MAX_TEXT_CHARS.toLocaleString('es-ES')}
+            </span>
+          </div>
           <textarea
             id="ai-clinical-text"
             value={clinicalText}
@@ -239,7 +284,8 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
               setClinicalText(e.target.value);
               if (error) setError(null);
             }}
-            className="min-h-[210px] flex-1 w-full resize-none rounded-xl border border-[#E5E5EA] bg-white/95 p-3.5 text-[13px] leading-relaxed text-[#1D1D1F] placeholder:text-[#8E8E93] focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-3 focus:ring-[#0071E3]/15"
+            placeholder="Pega una guía clínica, caso o protocolo médico-nutricional…"
+            className="min-h-[190px] flex-1 w-full resize-none rounded-xl border border-[#E5E5EA] bg-white/95 p-3.5 text-[13px] leading-relaxed text-[#1D1D1F] placeholder:text-[#8E8E93] focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-3 focus:ring-[#0071E3]/15"
           />
         </div>
 
@@ -247,16 +293,21 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
         <div>
           <span className="block text-[12.5px] font-medium text-[#1D1D1F] mb-1.5">
             O adjunta un archivo o imagen{' '}
-            <span className="font-normal text-[#8E8E93]">(PNG, JPG, PDF, TXT, MD)</span>
+            <span className="font-normal text-[#8E8E93]">(PNG, JPG, WebP, PDF, TXT · máx. 15 MB)</span>
           </span>
 
           {attachedDoc ? (
             <div className="flex items-center justify-between gap-2 rounded-xl border border-[#E5E5EA] bg-white px-3.5 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
                 <FileText className="h-4 w-4 shrink-0 text-[#0071E3]" aria-hidden="true" />
-                <span className="truncate text-[12.5px] font-medium text-[#1D1D1F]">
-                  {attachedDoc.name}
-                </span>
+                <div className="min-w-0">
+                  <span className="block truncate text-[12.5px] font-medium text-[#1D1D1F]">
+                    {attachedDoc.name}
+                  </span>
+                  <span className="block text-[11px] text-[#8E8E93]">
+                    {formatFileSize(attachedDoc.sizeBytes)}
+                  </span>
+                </div>
               </div>
               <button
                 type="button"
@@ -303,7 +354,7 @@ export const GeneratorAiDrawer: React.FC<GeneratorAiDrawerProps> = ({
 
         <button
           type="submit"
-          disabled={isGenerating}
+          disabled={isGenerating || exceedsTextLimit}
           className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#0071E3] px-4 text-[13.5px] font-medium text-white shadow-[0_1px_3px_rgba(0,113,227,0.3)] transition-all hover:bg-[#0077ED] active:scale-[0.99] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] focus-visible:ring-offset-2"
         >
           {isGenerating ? (
