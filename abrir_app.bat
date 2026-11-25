@@ -7,6 +7,7 @@ title Biblioteca de Algoritmos Nutricionales
 
 set "PORT=3000"
 set "APP_URL=http://localhost:%PORT%"
+set "NODE_ENV="
 
 echo ============================================================
 echo   Biblioteca de Algoritmos de Tratamiento Médico Nutricional
@@ -28,10 +29,10 @@ if errorlevel 1 (
 
 if not exist "node_modules" (
     echo [1/2] Instalando dependencias...
-    call npm install --no-audit --no-fund
+    call npm install --include=dev --no-audit --no-fund
     if errorlevel 1 (
         echo       Reintentando instalación en modo compatible...
-        call npm install --legacy-peer-deps --no-audit --no-fund
+        call npm install --include=dev --legacy-peer-deps --no-audit --no-fund
         if errorlevel 1 (
             echo.
             echo [ERROR] Falló la instalación de dependencias.

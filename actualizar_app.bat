@@ -6,6 +6,7 @@ cd /d "%~dp0"
 title Actualizar - Biblioteca de Algoritmos Nutricionales
 
 set "PORT=3000"
+set "NODE_ENV="
 set "NO_PAUSE=0"
 if /i "%~1"=="--no-pause" set "NO_PAUSE=1"
 
@@ -98,10 +99,10 @@ if not "%BEFORE_REV%"=="%AFTER_REV%" (
 
 echo.
 echo [4/5] Instalando/actualizando dependencias...
-call npm install --no-audit --no-fund
+call npm install --include=dev --no-audit --no-fund
 if errorlevel 1 (
     echo       Reintentando instalación en modo compatible...
-    call npm install --legacy-peer-deps --no-audit --no-fund
+    call npm install --include=dev --legacy-peer-deps --no-audit --no-fund
     if errorlevel 1 (
         echo [ERROR] Falló la instalación de dependencias.
         echo         Si la app está abierta, cierra su ventana e intenta de nuevo.
