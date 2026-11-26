@@ -16,13 +16,13 @@ export const FilterStrip: React.FC<FilterStripProps> = ({
   onOpenStudyMode,
 }) => {
   return (
-    <section className="w-full px-4 pt-5 pb-5 sm:px-8">
-      <div className="flex items-center justify-between gap-4 border-b border-[#E5E5EA] pb-4">
+    <section className="w-full px-4 pt-10 pb-5 sm:px-8 sm:pt-12">
+      <div className="flex items-center justify-between gap-4 border-b border-[#E5E5EA] pb-3">
         {/* Segmented Category Filter Controls including Carrusel */}
         <div
           role="tablist"
           aria-label="Filtrar algoritmos por categoría"
-          className="flex items-center gap-1 overflow-x-auto rounded-[10px] bg-[#F5F5F7] p-1 max-w-full"
+          className="no-scrollbar flex items-center gap-1 overflow-x-auto rounded-[10px] bg-[#F5F5F7] p-1 max-w-full"
         >
           {availableTags.map((tag) => {
             const isSelected = activeTag === tag;

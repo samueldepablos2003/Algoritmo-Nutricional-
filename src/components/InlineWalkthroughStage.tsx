@@ -148,7 +148,7 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
     zoomRef.current = nextZoom;
     panRef.current = nextPan;
     if (worldRef.current) {
-      worldRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${nextZoom})`;
+      worldRef.current.style.transform = `translate(${nextPan.x}px, ${nextPan.y}px) scale(${nextZoom})`;
     }
     setZoom(nextZoom);
     setPan(nextPan);
@@ -187,7 +187,7 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
       zoomRef.current = nextZoom;
       panRef.current = nextPan;
       if (worldRef.current) {
-        worldRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${nextZoom})`;
+        worldRef.current.style.transform = `translate(${nextPan.x}px, ${nextPan.y}px) scale(${nextZoom})`;
       }
       setZoom(nextZoom);
       setPan(nextPan);
@@ -376,13 +376,12 @@ export const InlineWalkthroughStage: React.FC<InlineWalkthroughStageProps> = ({
           <div
             ref={worldRef}
             style={{
-              transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+              transform: isPanning
+                ? `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`
+                : `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: '0 0',
-              transition: isPanning
-                ? 'none'
-                : 'transform 140ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
-            className="absolute left-0 top-0 will-change-transform"
+            className="absolute left-0 top-0"
           >
             {/* Interactive Edges Layer */}
             <svg

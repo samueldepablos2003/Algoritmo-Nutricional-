@@ -1,10 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Loader2, Pencil, Trash2, Upload } from 'lucide-react';
 import type { AlgorithmItem, CardOriginRect } from '../types/algorithm';
 
 interface AlgorithmCardProps {
   algorithm: AlgorithmItem;
   onOpen: (algorithm: AlgorithmItem, originRect: CardOriginRect) => void;
+  onExportJpg: (algorithm: AlgorithmItem) => void;
+  isExporting?: boolean;
   onEditMetadata: (algorithm: AlgorithmItem) => void;
   onDelete: (algorithm: AlgorithmItem) => void;
 }
@@ -12,6 +14,8 @@ interface AlgorithmCardProps {
 export const AlgorithmCard: React.FC<AlgorithmCardProps> = ({
   algorithm,
   onOpen,
+  onExportJpg,
+  isExporting = false,
   onEditMetadata,
   onDelete,
 }) => {
@@ -38,7 +42,7 @@ export const AlgorithmCard: React.FC<AlgorithmCardProps> = ({
         type="button"
         onClick={handleOpen}
         aria-label={`Abrir algoritmo ${algorithm.title} a pantalla completa`}
-        className="relative aspect-[16/10] w-full overflow-hidden rounded-t-[15px] bg-[#FAFAFC] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0071E3]"
+        className="relative aspect-[16/9] w-full overflow-hidden rounded-t-[15px] bg-[#FAFAFC] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0071E3]"
       >
         {!imageError ? (
           <img
@@ -46,7 +50,7 @@ export const AlgorithmCard: React.FC<AlgorithmCardProps> = ({
             alt={algorithm.title}
             referrerPolicy="no-referrer"
             onError={() => setImageError(true)}
-            className="h-full w-full object-contain p-3 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.018]"
+            className="h-full w-full object-contain p-2.5 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.018]"
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center bg-[#F5F5F7] p-6 text-center">
@@ -61,21 +65,47 @@ export const AlgorithmCard: React.FC<AlgorithmCardProps> = ({
         />
       </button>
 
-      {/* Discreet Hover / Focus Delete Action */}
-      <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+      {/* Top-Right Image Actions: Export JPG (Upload icon) & Discreet Hover Delete */}
+      <div className="absolute right-3 top-3 flex items-center gap-1.5">
         <button
           type="button"
-          onClick={() => onDelete(algorithm)}
+          data-testid={`export-jpg-btn-${algorithm.id}`}
+          disabled={isExporting}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExportJpg(algorithm);
+          }}
+          aria-label={`Exportar ${algorithm.title} como JPG`}
+          title="Exportar como JPG"
+          className={`flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5EA] bg-white/92 text-[#1D1D1F] shadow-xs backdrop-blur-md transition-all hover:border-[#0071E3]/40 hover:bg-white hover:text-[#0071E3] disabled:cursor-wait focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
+            isExporting
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+          }`}
+        >
+          {isExporting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(algorithm);
+          }}
           aria-label={`Eliminar ${algorithm.title}`}
           title="Eliminar algoritmo"
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5EA] bg-white/90 text-[#6E6E73] backdrop-blur-md transition-colors hover:bg-white hover:text-[#DC2626] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#DC2626]"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5EA] bg-white/92 text-[#6E6E73] opacity-0 backdrop-blur-md transition-all group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-white hover:text-[#DC2626] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#DC2626]"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
       {/* Card Typography & Clean Unboxed Metadata */}
-      <div className="flex flex-1 flex-col justify-between gap-2.5 p-5">
+      <div className="flex flex-1 flex-col justify-between gap-2 p-4">
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0 flex-1">
             <button

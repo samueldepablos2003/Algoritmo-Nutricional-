@@ -36,6 +36,15 @@
   }
 }
 
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 .mac-glass {
   background-color: rgba(245, 245, 247, 0.8);
   backdrop-filter: blur(16px);

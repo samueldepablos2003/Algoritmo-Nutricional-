@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ImagePlus, RotateCcw, SearchX } from 'lucide-react';
-import type { AlgorithmItem, CardOriginRect, EditableDiagram } from './types/algorithm';
+import { Folder, Home, ImagePlus, RotateCcw, SearchX } from 'lucide-react';
 import {
-  collectAvailableTags,
+  LIBRARY_FILTER_TAGS,
+  type AlgorithmItem,
+  type CardOriginRect,
+  type EditableDiagram,
+} from './types/algorithm';
+import {
   filterAlgorithms,
   getNextViewerIndex,
 } from './utils/algorithmLogic';
@@ -13,6 +17,7 @@ import {
   restoreSampleAlgorithms,
 } from './utils/db';
 import { digitizeImageToDiagram } from './utils/imageDigitizer';
+import { exportAlgorithmAsJpg } from './utils/imageExport';
 import { createSeedAlgorithms } from './utils/seedData';
 import { TopBar } from './components/TopBar';
 import { FilterStrip } from './components/FilterStrip';
@@ -21,6 +26,7 @@ import { UploadModal } from './components/UploadModal';
 import { QuickLookViewer } from './components/QuickLookViewer';
 import { DynamicStudyViewer } from './components/DynamicStudyViewer';
 import { AlgorithmGenerator } from './components/AlgorithmGenerator';
+import { HomeWorkspace } from './components/HomeWorkspace';
 import { DropOverlay } from './components/DropOverlay';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { useFullscreen } from './hooks/useFullscreen';
@@ -32,9 +38,11 @@ interface ToastMessage {
 }
 
 export default function App() {
+  const [activePage, setActivePage] = useState<'home' | 'library'>('home');
   const [algorithms, setAlgorithms] = useState<AlgorithmItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpenTrigger, setSearchOpenTrigger] = useState(0);
   const [activeTag, setActiveTag] = useState<string | null>(null);
 
   // Quick Look viewer state
@@ -59,6 +67,7 @@ export default function App() {
   const [editingAlgorithm, setEditingAlgorithm] = useState<AlgorithmItem | null>(null);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
   const [digitizingAlgoId, setDigitizingAlgoId] = useState<string | null>(null);
+  const [exportingAlgoId, setExportingAlgoId] = useState<string | null>(null);
 
   // Delete confirmation state
   const [pendingDelete, setPendingDelete] = useState<AlgorithmItem | null>(null);
@@ -124,8 +133,8 @@ export default function App() {
         if (studyModeOpen) {
           setStudyModeOpen(false);
         }
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        setActivePage('library');
+        setSearchOpenTrigger((n) => n + 1);
         return;
       }
 
@@ -214,38 +223,31 @@ export default function App() {
     };
   }, [showToast]);
 
-  const availableTags = useMemo(() => collectAvailableTags(algorithms), [algorithms]);
-
   const visibleAlgorithms = useMemo(
     () => filterAlgorithms(algorithms, searchQuery, activeTag),
     [algorithms, searchQuery, activeTag]
   );
 
-  // Reset active category if it no longer exists after deleting or editing
-  useEffect(() => {
-    if (activeTag && !availableTags.includes(activeTag)) {
-      setActiveTag(null);
-    }
-  }, [activeTag, availableTags]);
+  const viewerAlgorithms = activePage === 'home' ? algorithms : visibleAlgorithms;
 
   const handleOpenQuickLook = useCallback(
     (algorithm: AlgorithmItem, originRect: CardOriginRect) => {
-      const idx = visibleAlgorithms.findIndex((item) => item.id === algorithm.id);
+      const idx = viewerAlgorithms.findIndex((item) => item.id === algorithm.id);
       if (idx === -1) return;
       setViewerOrigin(originRect);
       setViewerIndex(idx);
     },
-    [visibleAlgorithms]
+    [viewerAlgorithms]
   );
 
   const handleNavigateQuickLook = useCallback(
     (direction: 'prev' | 'next') => {
       setViewerIndex((current) => {
         if (current === null) return null;
-        return getNextViewerIndex(current, visibleAlgorithms.length, direction);
+        return getNextViewerIndex(current, viewerAlgorithms.length, direction);
       });
     },
-    [visibleAlgorithms.length]
+    [viewerAlgorithms.length]
   );
 
   const handleSaveAlgorithm = useCallback(
@@ -444,6 +446,27 @@ export default function App() {
     void putAlgorithm(updated);
   }, []);
 
+  const handleExportAlgorithmJpg = useCallback(
+    async (target: AlgorithmItem) => {
+      if (exportingAlgoId) return;
+      setExportingAlgoId(target.id);
+      try {
+        await exportAlgorithmAsJpg(target);
+        showToast(`"${target.title}" exportado en formato JPG.`);
+      } catch (err: unknown) {
+        showToast(
+          err instanceof Error
+            ? err.message
+            : 'No se pudo exportar la imagen como JPG.',
+          'error'
+        );
+      } finally {
+        setExportingAlgoId(null);
+      }
+    },
+    [exportingAlgoId, showToast]
+  );
+
   const handleConfirmDelete = useCallback(async () => {
     if (!pendingDelete) return;
     const target = pendingDelete;
@@ -470,132 +493,199 @@ export default function App() {
     }
   }, [algorithms.length, isFullscreen, enterFullscreen]);
 
+  const handleHomeGeneratedAlgorithm = useCallback(
+    async (payload: {
+      title: string;
+      subtitle?: string;
+      tags: string[];
+      imageDataUrl: string;
+      sourceImageDataUrl?: string;
+      reference?: string;
+      notes: string;
+      diagram: EditableDiagram;
+    }) => {
+      await handleSaveAlgorithm(payload);
+      setSearchQuery('');
+      setActiveTag(null);
+      setViewerOrigin(null);
+      setViewerIndex(0);
+    },
+    [handleSaveAlgorithm]
+  );
+
+  const showFloatingSidebar = viewerIndex === null && !studyModeOpen && !generatorOpen;
+
   return (
     <div id="inicio" className="min-h-screen bg-white text-[#1D1D1F] flex flex-col">
-      <TopBar
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        searchInputRef={searchInputRef}
-        onOpenGenerator={() => {
-          setGeneratorInitialAlgo(null);
-          setGeneratorOpenAiInitially(true);
-          setGeneratorInitialMode('edit');
-          setGeneratorOpen(true);
-        }}
-        onOpenUpload={() => {
-          setEditingAlgorithm(null);
-          setDroppedFile(null);
-          setUploadOpen(true);
-        }}
-      />
-
-      <main className="flex-1 pb-20">
-        <FilterStrip
-          availableTags={availableTags}
-          activeTag={activeTag}
-          onSelectTag={setActiveTag}
-          totalCount={algorithms.length}
-          onOpenStudyMode={handleOpenStudyMode}
-        />
-
-        <section
-          aria-label="Galería de algoritmos"
-          className="w-full px-4 pt-2 sm:px-8"
+      {/* Floating Left Navigation Pill (Home & Folder -> Biblioteca) */}
+      {showFloatingSidebar && (
+        <nav
+          aria-label="Navegación principal"
+          data-testid="floating-left-nav"
+          className="fixed left-3.5 top-1/2 z-30 flex -translate-y-1/2 flex-col items-center gap-1.5 rounded-full border border-[#E5E7EB] bg-white/95 p-1.5 shadow-[0_8px_24px_-8px_rgba(15,23,42,0.14)] backdrop-blur-md sm:left-5"
         >
-          {isLoading ? (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-              {[0, 1].map((skeleton) => (
-                <div
-                  key={skeleton}
-                  className="overflow-hidden rounded-2xl border border-[#E5E5EA] bg-white"
-                >
-                  <div className="aspect-[16/10] animate-pulse bg-[#F5F5F7]" />
-                  <div className="space-y-2.5 p-5">
-                    <div className="h-4 w-3/4 animate-pulse rounded bg-[#F5F5F7]" />
-                    <div className="h-3 w-1/2 animate-pulse rounded bg-[#F5F5F7]" />
+          <button
+            type="button"
+            data-testid="nav-home-btn"
+            onClick={() => {
+              setActivePage('home');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            aria-label="Inicio"
+            aria-current={activePage === 'home' ? 'page' : undefined}
+            title="Inicio"
+            className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
+              activePage === 'home'
+                ? 'bg-[#262626] text-white shadow-xs'
+                : 'text-[#6E6E73] hover:bg-[#F3F4F6] hover:text-[#1D1D1F]'
+            }`}
+          >
+            <Home className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="nav-library-btn"
+            onClick={() => {
+              setActivePage('library');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            aria-label="Biblioteca"
+            aria-current={activePage === 'library' ? 'page' : undefined}
+            title="Biblioteca"
+            className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3] ${
+              activePage === 'library'
+                ? 'bg-[#262626] text-white shadow-xs'
+                : 'text-[#6E6E73] hover:bg-[#F3F4F6] hover:text-[#1D1D1F]'
+            }`}
+          >
+            <Folder className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </nav>
+      )}
+
+      {activePage === 'home' ? (
+        <HomeWorkspace onGeneratedAlgorithmReady={handleHomeGeneratedAlgorithm} />
+      ) : (
+        <div className="flex flex-1 flex-col bg-white">
+          <TopBar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchInputRef={searchInputRef}
+            searchOpenTrigger={searchOpenTrigger}
+          />
+
+          <main className="flex-1 pb-12 pl-16 sm:pl-24">
+            <FilterStrip
+              availableTags={[...LIBRARY_FILTER_TAGS]}
+              activeTag={activeTag}
+              onSelectTag={setActiveTag}
+              totalCount={algorithms.length}
+              onOpenStudyMode={handleOpenStudyMode}
+            />
+
+            <section
+              aria-label="Galería de algoritmos"
+              className="w-full px-4 pt-1 sm:px-8"
+            >
+              {isLoading ? (
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                  {[0, 1].map((skeleton) => (
+                    <div
+                      key={skeleton}
+                      className="overflow-hidden rounded-2xl border border-[#E5E5EA] bg-white"
+                    >
+                      <div className="aspect-[16/9] animate-pulse bg-[#F5F5F7]" />
+                      <div className="space-y-2.5 p-4">
+                        <div className="h-4 w-3/4 animate-pulse rounded bg-[#F5F5F7]" />
+                        <div className="h-3 w-1/2 animate-pulse rounded bg-[#F5F5F7]" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : algorithms.length === 0 ? (
+                <div className="mx-auto my-14 flex max-w-md flex-col items-center rounded-2xl border border-dashed border-[#D1D1D6] bg-[#FAFAFC] px-8 py-14 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#E5E5EA] bg-white text-[#1D1D1F]">
+                    <ImagePlus className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <h2 className="mt-4 text-[16px] font-semibold text-[#1D1D1F]">
+                    Tu biblioteca está vacía
+                  </h2>
+                  <p className="mt-1.5 text-[13.5px] leading-relaxed text-[#6E6E73]">
+                    Arrastra una imagen clínica sobre esta pantalla, agrega un nuevo algoritmo o restaura los ejemplos precargados.
+                  </p>
+                  <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingAlgorithm(null);
+                        setDroppedFile(null);
+                        setUploadOpen(true);
+                      }}
+                      className="h-9 rounded-[10px] bg-[#1D1D1F] px-4 text-[13px] font-medium text-white transition-colors hover:bg-[#3A3A3C]"
+                    >
+                      Agregar Algoritmo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRestoreSamples()}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-[#E5E5EA] bg-white px-4 text-[13px] font-medium text-[#1D1D1F] transition-colors hover:bg-[#F5F5F7]"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                      Restaurar ejemplos
+                    </button>
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : algorithms.length === 0 ? (
-            <div className="mx-auto my-14 flex max-w-md flex-col items-center rounded-2xl border border-dashed border-[#D1D1D6] bg-[#FAFAFC] px-8 py-14 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#E5E5EA] bg-white text-[#1D1D1F]">
-                <ImagePlus className="h-5 w-5" aria-hidden="true" />
-              </div>
-              <h2 className="mt-4 text-[16px] font-semibold text-[#1D1D1F]">
-                Tu biblioteca está vacía
-              </h2>
-              <p className="mt-1.5 text-[13.5px] leading-relaxed text-[#6E6E73]">
-                Arrastra una imagen clínica sobre esta pantalla, agrega un nuevo algoritmo o restaura los ejemplos precargados.
-              </p>
-              <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingAlgorithm(null);
-                    setDroppedFile(null);
-                    setUploadOpen(true);
-                  }}
-                  className="h-9 rounded-[10px] bg-[#1D1D1F] px-4 text-[13px] font-medium text-white transition-colors hover:bg-[#3A3A3C]"
+              ) : visibleAlgorithms.length === 0 ? (
+                <div className="mx-auto my-14 flex max-w-md flex-col items-center rounded-2xl border border-[#E5E5EA] bg-[#FAFAFC] px-8 py-12 text-center">
+                  <SearchX className="h-7 w-7 text-[#8E8E93]" aria-hidden="true" />
+                  <h2 className="mt-3 text-[15.5px] font-semibold text-[#1D1D1F]">
+                    Sin resultados para esta búsqueda
+                  </h2>
+                  <p className="mt-1 text-[13.5px] text-[#6E6E73]">
+                    No se encontraron algoritmos que coincidan con los filtros actuales.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setActiveTag(null);
+                    }}
+                    className="mt-5 h-9 rounded-[10px] border border-[#E5E5EA] bg-white px-4 text-[13px] font-medium text-[#1D1D1F] transition-colors hover:bg-[#F5F5F7]"
+                  >
+                    Mostrar todos los algoritmos
+                  </button>
+                </div>
+              ) : (
+                <div
+                  data-testid="algorithm-grid"
+                  className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
                 >
-                  Agregar Algoritmo
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRestoreSamples()}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-[#E5E5EA] bg-white px-4 text-[13px] font-medium text-[#1D1D1F] transition-colors hover:bg-[#F5F5F7]"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                  Restaurar ejemplos
-                </button>
-              </div>
-            </div>
-          ) : visibleAlgorithms.length === 0 ? (
-            <div className="mx-auto my-14 flex max-w-md flex-col items-center rounded-2xl border border-[#E5E5EA] bg-[#FAFAFC] px-8 py-12 text-center">
-              <SearchX className="h-7 w-7 text-[#8E8E93]" aria-hidden="true" />
-              <h2 className="mt-3 text-[15.5px] font-semibold text-[#1D1D1F]">
-                Sin resultados para esta búsqueda
-              </h2>
-              <p className="mt-1 text-[13.5px] text-[#6E6E73]">
-                No se encontraron algoritmos que coincidan con los filtros actuales.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setActiveTag(null);
-                }}
-                className="mt-5 h-9 rounded-[10px] border border-[#E5E5EA] bg-white px-4 text-[13px] font-medium text-[#1D1D1F] transition-colors hover:bg-[#F5F5F7]"
-              >
-                Mostrar todos los algoritmos
-              </button>
-            </div>
-          ) : (
-            <div
-              data-testid="algorithm-grid"
-              className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
-            >
-              {visibleAlgorithms.map((algo) => (
-                <AlgorithmCard
-                  key={algo.id}
-                  algorithm={algo}
-                  onOpen={handleOpenQuickLook}
-                  onEditMetadata={(target) => {
-                    setEditingAlgorithm(target);
-                    setDroppedFile(null);
-                    setUploadOpen(true);
-                  }}
-                  onDelete={(target) => setPendingDelete(target)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
+                  {visibleAlgorithms.map((algo) => (
+                    <AlgorithmCard
+                      key={algo.id}
+                      algorithm={algo}
+                      onOpen={handleOpenQuickLook}
+                      onExportJpg={(target) => void handleExportAlgorithmJpg(target)}
+                      isExporting={exportingAlgoId === algo.id}
+                      onEditMetadata={(target) => {
+                        setEditingAlgorithm(target);
+                        setDroppedFile(null);
+                        setUploadOpen(true);
+                      }}
+                      onDelete={(target) => setPendingDelete(target)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          </main>
+        </div>
+      )}
 
       {/* Full-Screen Algorithm Viewer (with Persistent 4-Button Header for Algoritmo, Recorrido, Editar & Notas) */}
       <QuickLookViewer
-        algorithms={visibleAlgorithms}
+        algorithms={viewerAlgorithms}
         activeIndex={viewerIndex}
         originRect={viewerOrigin}
         onClose={() => setViewerIndex(null)}
@@ -615,8 +705,8 @@ export default function App() {
         onDigitizeAlgorithm={(target) => void handleDigitizeExistingAlgorithm(target)}
         isDigitizing={
           viewerIndex !== null &&
-          visibleAlgorithms[viewerIndex] !== undefined &&
-          digitizingAlgoId === visibleAlgorithms[viewerIndex].id
+          viewerAlgorithms[viewerIndex] !== undefined &&
+          digitizingAlgoId === viewerAlgorithms[viewerIndex].id
         }
         isFullscreen={isFullscreen}
         onToggleFullscreen={handleToggleAppFullscreen}

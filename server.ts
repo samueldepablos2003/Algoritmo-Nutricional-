@@ -291,6 +291,12 @@ async function startServer() {
         documentBase64?: unknown;
         documentMimeType?: unknown;
         documentName?: unknown;
+        colorPaletteName?: unknown;
+        colorPaletteColors?: unknown;
+        customTitle?: unknown;
+        hasReference?: unknown;
+        customReference?: unknown;
+        algorithmContext?: unknown;
       };
 
       const clinicalText = typeof body.clinicalText === 'string' ? body.clinicalText.trim() : '';
@@ -300,6 +306,20 @@ async function startServer() {
         typeof body.documentMimeType === 'string' ? body.documentMimeType.trim() : '';
       const documentName =
         typeof body.documentName === 'string' ? body.documentName.trim() : 'documento';
+      const colorPaletteName =
+        typeof body.colorPaletteName === 'string' ? body.colorPaletteName.trim().slice(0, 80) : '';
+      const colorPaletteColors = Array.isArray(body.colorPaletteColors)
+        ? body.colorPaletteColors
+            .filter((c): c is string => typeof c === 'string' && /^#[0-9A-Fa-f]{6}$/.test(c.trim()))
+            .slice(0, 6)
+        : [];
+      const customTitle =
+        typeof body.customTitle === 'string' ? body.customTitle.trim().slice(0, 140) : '';
+      const hasReference = typeof body.hasReference === 'boolean' ? body.hasReference : false;
+      const customReference =
+        typeof body.customReference === 'string' ? body.customReference.trim().slice(0, 260) : '';
+      const algorithmContext =
+        typeof body.algorithmContext === 'string' ? body.algorithmContext.trim().slice(0, 4000) : '';
       const isImageDigitize =
         body.mode === 'image-digitize' || documentMimeType.startsWith('image/');
       const isPdfDocument = documentMimeType === 'application/pdf';
@@ -364,6 +384,34 @@ async function startServer() {
               'Analiza rigurosamente el texto clínico/nutricional entregado.',
               'Extrae silenciosamente el contexto introductorio en "clinicalContext" y estructura el protocolo médico-nutricional en un algoritmo limpio y continuo (sin dividirlo ni etiquetarlo en fases), con umbrales, tiempos, dosis y bifurcaciones bien etiquetadas.',
             ];
+
+      if (customTitle) {
+        promptLines.push(`Nombre solicitado para el algoritmo: "${customTitle}".`);
+      }
+
+      if (hasReference && customReference) {
+        promptLines.push(
+          `El usuario confirmó que ya cuenta con la referencia bibliográfica del texto: "${customReference}". Consérvala en el campo "reference".`
+        );
+      } else if (hasReference) {
+        promptLines.push(
+          'El usuario indicó que el texto ya incluye o cuenta con una referencia clínica; identifícala con precisión y guárdala en el campo "reference".'
+        );
+      }
+
+      if (algorithmContext) {
+        promptLines.push(
+          `Contexto del algoritmo proporcionado exclusivamente para orientar tu criterio clínico (úsalo para interpretar correctamente el protocolo y enriquecer "clinicalContext", SIN convertirlo en cuadros ni fases del diagrama):\n${algorithmContext}`
+        );
+      }
+
+      if (colorPaletteName) {
+        const swatchText =
+          colorPaletteColors.length > 0 ? ` (${colorPaletteColors.join(', ')})` : '';
+        promptLines.push(
+          `Paleta visual seleccionada por el usuario: "${colorPaletteName}"${swatchText}. Distribuye los tonos semánticos de los nodos ("gray", "blue", "mint", "amber", "rose", "white") de forma armónica y variada para aprovechar plenamente esta paleta de colores en el diagrama final.`
+        );
+      }
 
       if (documentBase64) {
         promptLines.push(`Archivo adjunto: "${documentName}".`);

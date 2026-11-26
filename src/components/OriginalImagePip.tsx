@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Maximize2, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { clampZoom, stepZoom } from '../utils/algorithmLogic';
+import { parseSvgDataUrlDimensions } from '../utils/imageExport';
 
 interface OriginalImagePipProps {
   imageDataUrl?: string;
@@ -23,6 +24,17 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const panRef = useRef(pan);
+  panRef.current = pan;
   const panStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(
     null
   );
@@ -34,6 +46,60 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
     setIsPanning(false);
     panStartRef.current = null;
   }, []);
+
+  const applyZoom = useCallback(
+    (rawNextZoom: number, anchorClient?: { x: number; y: number }) => {
+      const nextZoom = clampZoom(rawNextZoom);
+      const prevZoom = zoomRef.current;
+      if (nextZoom === prevZoom) return;
+
+      const ratio = nextZoom / prevZoom;
+      const prevPan = panRef.current;
+      let nextPan = {
+        x: Math.round(prevPan.x * ratio),
+        y: Math.round(prevPan.y * ratio),
+      };
+
+      if (anchorClient && stageRef.current) {
+        const rect = stageRef.current.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = anchorClient.x - cx;
+        const dy = anchorClient.y - cy;
+        nextPan = {
+          x: Math.round(dx - (dx - prevPan.x) * ratio),
+          y: Math.round(dy - (dy - prevPan.y) * ratio),
+        };
+      }
+
+      zoomRef.current = nextZoom;
+      panRef.current = nextPan;
+      setZoom(nextZoom);
+      setPan(nextPan);
+    },
+    []
+  );
+
+  useEffect(() => {
+    setNaturalSize(imageDataUrl ? parseSvgDataUrlDimensions(imageDataUrl) : null);
+  }, [imageDataUrl]);
+
+  useLayoutEffect(() => {
+    if (!isExpanded || !stageRef.current) return;
+    const el = stageRef.current;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      setStageSize((prev) =>
+        prev.width === Math.round(rect.width) && prev.height === Math.round(rect.height)
+          ? prev
+          : { width: Math.round(rect.width), height: Math.round(rect.height) }
+      );
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isExpanded]);
 
   // Capture-phase Escape handler so closing the original image never closes the editor/viewer behind it
   useEffect(() => {
@@ -47,11 +113,11 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
       } else if (e.key === '+' || e.key === '=') {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setZoom((z) => stepZoom(z, 'in'));
+        applyZoom(stepZoom(zoomRef.current, 'in'));
       } else if (e.key === '-' || e.key === '_') {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setZoom((z) => stepZoom(z, 'out'));
+        applyZoom(stepZoom(zoomRef.current, 'out'));
       } else if (e.key === '0') {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -62,9 +128,20 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isExpanded, handleClose]);
+  }, [isExpanded, handleClose, applyZoom]);
 
   if (!imageDataUrl) return null;
+
+  const fittedZoomedSize = (() => {
+    if (!naturalSize || stageSize.width <= 0 || stageSize.height <= 0) return null;
+    const availW = Math.max(200, stageSize.width - 48);
+    const availH = Math.max(180, stageSize.height - 48);
+    const fitScale = Math.min(availW / naturalSize.width, availH / naturalSize.height);
+    return {
+      width: Math.max(1, Math.round(naturalSize.width * fitScale * zoom)),
+      height: Math.max(1, Math.round(naturalSize.height * fitScale * zoom)),
+    };
+  })();
 
   const zoomPercent = Math.round(zoom * 100);
 
@@ -137,7 +214,7 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
                 <div className="hidden items-center gap-0.5 rounded-xl border border-[#E5E5EA] bg-white/90 px-1 py-0.5 sm:flex">
                   <button
                     type="button"
-                    onClick={() => setZoom((z) => stepZoom(z, 'out'))}
+                    onClick={() => applyZoom(stepZoom(zoomRef.current, 'out'))}
                     aria-label="Alejar imagen original"
                     className="flex h-7 w-7 items-center justify-center rounded-lg text-[#1D1D1F] hover:bg-[#F5F5F7]"
                   >
@@ -156,7 +233,7 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setZoom((z) => stepZoom(z, 'in'))}
+                    onClick={() => applyZoom(stepZoom(zoomRef.current, 'in'))}
                     aria-label="Acercar imagen original"
                     className="flex h-7 w-7 items-center justify-center rounded-lg text-[#1D1D1F] hover:bg-[#F5F5F7]"
                   >
@@ -187,12 +264,13 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
               </div>
             </div>
 
-            {/* Interactive Zoom & Pan Surface */}
+            {/* Interactive Zoom & Pan Surface (true layout resolution up to 400%) */}
             <div
+              ref={stageRef}
               onWheel={(e) => {
                 e.preventDefault();
                 const delta = e.deltaY < 0 ? 0.15 : -0.15;
-                setZoom((z) => clampZoom(z + delta));
+                applyZoom(zoomRef.current + delta, { x: e.clientX, y: e.clientY });
               }}
               onPointerDown={(e) => {
                 if (e.button !== 0) return;
@@ -230,19 +308,42 @@ export const OriginalImagePip: React.FC<OriginalImagePipProps> = ({
             >
               <div
                 style={{
-                  transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
-                  transition: isPanning
-                    ? 'none'
-                    : 'transform 160ms cubic-bezier(0.16, 1, 0.3, 1)',
+                  transform: `translate(${Math.round(pan.x)}px, ${Math.round(pan.y)}px)`,
                 }}
-                className="flex max-h-full max-w-full items-center justify-center will-change-transform"
+                className="flex shrink-0 items-center justify-center"
               >
                 <img
                   src={imageDataUrl}
                   alt={`Imagen original completa: ${title}`}
+                  width={fittedZoomedSize?.width}
+                  height={fittedZoomedSize?.height}
                   draggable={false}
+                  decoding="sync"
                   referrerPolicy="no-referrer"
-                  className="max-h-[calc(90vh-110px)] max-w-full rounded-xl border border-[#E5E5EA] bg-white object-contain shadow-[0_12px_38px_-14px_rgba(29,29,31,0.14)] pointer-events-none"
+                  onLoad={(e) => {
+                    const imgEl = e.currentTarget;
+                    const parsedSvg = parseSvgDataUrlDimensions(imageDataUrl);
+                    const w = parsedSvg?.width || imgEl.naturalWidth;
+                    const h = parsedSvg?.height || imgEl.naturalHeight;
+                    if (w > 0 && h > 0) {
+                      setNaturalSize((prev) =>
+                        prev && prev.width === w && prev.height === h ? prev : { width: w, height: h }
+                      );
+                    }
+                  }}
+                  style={
+                    fittedZoomedSize
+                      ? {
+                          width: `${fittedZoomedSize.width}px`,
+                          height: `${fittedZoomedSize.height}px`,
+                        }
+                      : undefined
+                  }
+                  className={
+                    fittedZoomedSize
+                      ? 'block shrink-0 rounded-xl border border-[#E5E5EA] bg-white object-contain shadow-[0_12px_38px_-14px_rgba(29,29,31,0.14)] pointer-events-none'
+                      : 'max-h-[calc(90vh-110px)] max-w-full rounded-xl border border-[#E5E5EA] bg-white object-contain shadow-[0_12px_38px_-14px_rgba(29,29,31,0.14)] pointer-events-none'
+                  }
                 />
               </div>
             </div>

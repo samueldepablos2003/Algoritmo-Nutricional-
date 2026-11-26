@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, GripHorizontal, X } from 'lucide-react';
 import type { DiagramColorMode, DiagramPaletteId } from '../types/algorithm';
 import { DIAGRAM_PALETTES } from '../utils/diagramTheme';
@@ -28,6 +28,21 @@ export const EditorFormatPanel: React.FC<EditorFormatPanelProps> = ({
 }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [hoveredPaletteId, setHoveredPaletteId] = useState<DiagramPaletteId | null>(null);
+  const [isDraggingPalettes, setIsDraggingPalettes] = useState(false);
+  const paletteListRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{
+    active: boolean;
+    pointerId: number;
+    startY: number;
+    startScrollTop: number;
+    didDrag: boolean;
+  }>({
+    active: false,
+    pointerId: -1,
+    startY: 0,
+    startScrollTop: 0,
+    didDrag: false,
+  });
 
   if (!open) return null;
 
@@ -105,10 +120,66 @@ export const EditorFormatPanel: React.FC<EditorFormatPanelProps> = ({
           </div>
 
           {/* Paletas de colores preestablecidas */}
-          <div className="grid grid-cols-2 gap-2.5">
+          <div
+            ref={paletteListRef}
+            onWheel={(e) => e.stopPropagation()}
+            onPointerDown={(e) => {
+              if (e.button !== 0 || !paletteListRef.current) return;
+              dragStateRef.current = {
+                active: true,
+                pointerId: e.pointerId,
+                startY: e.clientY,
+                startScrollTop: paletteListRef.current.scrollTop,
+                didDrag: false,
+              };
+            }}
+            onPointerMove={(e) => {
+              const state = dragStateRef.current;
+              const container = paletteListRef.current;
+              if (!state.active || state.pointerId !== e.pointerId || !container) return;
+              const deltaY = e.clientY - state.startY;
+              if (!state.didDrag && Math.abs(deltaY) > 5) {
+                state.didDrag = true;
+                setIsDraggingPalettes(true);
+                setHoveredPaletteId(null);
+                try {
+                  container.setPointerCapture(e.pointerId);
+                } catch {
+                  // Ignore if pointer capture is unavailable
+                }
+              }
+              if (state.didDrag) {
+                container.scrollTop = state.startScrollTop - deltaY;
+              }
+            }}
+            onPointerUp={(e) => {
+              const state = dragStateRef.current;
+              if (!state.active || state.pointerId !== e.pointerId) return;
+              state.active = false;
+              if (state.didDrag) {
+                setIsDraggingPalettes(false);
+                try {
+                  paletteListRef.current?.releasePointerCapture(e.pointerId);
+                } catch {
+                  // Ignore if pointer capture is not held
+                }
+                window.setTimeout(() => {
+                  dragStateRef.current.didDrag = false;
+                }, 0);
+              }
+            }}
+            onPointerCancel={() => {
+              dragStateRef.current.active = false;
+              dragStateRef.current.didDrag = false;
+              setIsDraggingPalettes(false);
+            }}
+            className={`no-scrollbar grid max-h-[212px] grid-cols-2 gap-2 overflow-y-auto overscroll-contain select-none ${
+              isDraggingPalettes ? 'cursor-grabbing' : 'cursor-grab'
+            }`}
+          >
             {DIAGRAM_PALETTES.map((palette) => {
               const active = colorMode === 'color' && paletteId === palette.id;
-              const showTooltip = hoveredPaletteId === palette.id;
+              const showTooltip = !isDraggingPalettes && hoveredPaletteId === palette.id;
               const previewFill = palette.tones.gray.fill;
               const previewBorder = active ? palette.swatches[0] : palette.tones.gray.stroke;
               return (
@@ -116,11 +187,18 @@ export const EditorFormatPanel: React.FC<EditorFormatPanelProps> = ({
                   <button
                     type="button"
                     data-testid={`palette-option-${palette.id}`}
-                    onClick={() => {
+                    onClick={(e) => {
+                      if (dragStateRef.current.didDrag) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                      }
                       if (colorMode !== 'color') onChangeColorMode('color');
                       onChangePalette(palette.id);
                     }}
-                    onMouseEnter={() => setHoveredPaletteId(palette.id)}
+                    onMouseEnter={() => {
+                      if (!isDraggingPalettes) setHoveredPaletteId(palette.id);
+                    }}
                     onMouseLeave={() => setHoveredPaletteId((curr) => (curr === palette.id ? null : curr))}
                     aria-pressed={active}
                     title={palette.name}

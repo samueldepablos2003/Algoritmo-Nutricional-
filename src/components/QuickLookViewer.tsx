@@ -32,6 +32,7 @@ import {
   stepZoom,
   undoLastStroke,
 } from '../utils/algorithmLogic';
+import { parseSvgDataUrlDimensions } from '../utils/imageExport';
 import { AlgorithmContextPopover } from './AlgorithmContextPopover';
 import { AlgorithmGenerator } from './AlgorithmGenerator';
 import { InlineWalkthroughStage } from './InlineWalkthroughStage';
@@ -78,9 +79,13 @@ function renderStrokesToCanvas(
   const rect = canvas.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return;
 
+  const MAX_CANVAS_EDGE = 4096;
   const dpr = window.devicePixelRatio || 1;
-  const targetWidth = Math.round(rect.width * dpr);
-  const targetHeight = Math.round(rect.height * dpr);
+  const rawW = rect.width * dpr;
+  const rawH = rect.height * dpr;
+  const capRatio = Math.min(1, MAX_CANVAS_EDGE / Math.max(rawW, rawH, 1));
+  const targetWidth = Math.max(1, Math.round(rawW * capRatio));
+  const targetHeight = Math.max(1, Math.round(rawH * capRatio));
 
   if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
     canvas.width = targetWidth;
@@ -88,7 +93,7 @@ function renderStrokesToCanvas(
   }
 
   ctx.save();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(targetWidth / rect.width, 0, 0, targetHeight / rect.height, 0, 0);
   ctx.clearRect(0, 0, rect.width, rect.height);
 
   const allStrokes = activeStroke ? [...strokes, activeStroke] : strokes;
@@ -151,12 +156,22 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [activeStroke, setActiveStroke] = useState<HighlightStroke | null>(null);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
 
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const panRef = useRef(pan);
+  panRef.current = pan;
   const panStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(
     null
   );
   const drawingStrokeRef = useRef<HighlightStroke | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const imageContainerRef = useRef<HTMLDivElement | null>(null);
   const notesTimerRef = useRef<number | null>(null);
   const editSaveHandlerRef = useRef<(() => Promise<void>) | null>(null);
@@ -167,11 +182,46 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
     onClose();
   }, [onClose]);
 
-  // Reset transform, notes draft, and inline mode when switching algorithms or reopening
+  const applyZoom = useCallback(
+    (rawNextZoom: number, anchorClient?: { x: number; y: number }) => {
+      const nextZoom = clampZoom(rawNextZoom);
+      const prevZoom = zoomRef.current;
+      if (nextZoom === prevZoom) return;
+
+      const ratio = nextZoom / prevZoom;
+      const prevPan = panRef.current;
+      let nextPan = {
+        x: Math.round(prevPan.x * ratio),
+        y: Math.round(prevPan.y * ratio),
+      };
+
+      if (anchorClient && stageRef.current) {
+        const rect = stageRef.current.getBoundingClientRect();
+        const rightReserve = rect.width >= 640 ? 80 : 64;
+        const cx = rect.left + (rect.width - rightReserve) / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = anchorClient.x - cx;
+        const dy = anchorClient.y - cy;
+        nextPan = {
+          x: Math.round(dx - (dx - prevPan.x) * ratio),
+          y: Math.round(dy - (dy - prevPan.y) * ratio),
+        };
+      }
+
+      zoomRef.current = nextZoom;
+      panRef.current = nextPan;
+      setZoom(nextZoom);
+      setPan(nextPan);
+    },
+    []
+  );
+
+  // Reset transform, intrinsic image size, notes draft, and inline mode when switching algorithms or reopening
   useEffect(() => {
     if (!currentAlgorithm) return;
     setZoom(1);
     setPan({ x: 0, y: 0 });
+    setNaturalSize(parseSvgDataUrlDimensions(currentAlgorithm.imageDataUrl));
     setNotesDraft(currentAlgorithm.notes);
     setNoteSaveState('idle');
     setEditTitleDraft(currentAlgorithm.title);
@@ -180,7 +230,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
     drawingStrokeRef.current = null;
     setShowContext(false);
     setViewerMode('view');
-  }, [currentAlgorithm?.id, isOpen]);
+  }, [currentAlgorithm?.id, currentAlgorithm?.imageDataUrl, isOpen]);
 
   // Prevent background page scroll while full-screen viewer is open
   useEffect(() => {
@@ -263,10 +313,10 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
         handleUndoStroke();
       } else if (viewerMode === 'view' && (e.key === '+' || e.key === '=')) {
         e.preventDefault();
-        setZoom((z) => stepZoom(z, 'in'));
+        applyZoom(stepZoom(zoomRef.current, 'in'));
       } else if (viewerMode === 'view' && (e.key === '-' || e.key === '_')) {
         e.preventDefault();
-        setZoom((z) => stepZoom(z, 'out'));
+        applyZoom(stepZoom(zoomRef.current, 'out'));
       } else if (viewerMode === 'view' && e.key === '0') {
         e.preventDefault();
         resetView();
@@ -275,13 +325,31 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, viewerMode, handleClose, handleNavigate, handleUndoStroke, resetView]);
+  }, [isOpen, viewerMode, handleClose, handleNavigate, handleUndoStroke, resetView, applyZoom]);
+
+  // Track stage viewport dimensions so images always re-rasterize crisply at real zoomed pixel sizes up to 400%
+  useLayoutEffect(() => {
+    if (!isOpen || viewerMode !== 'view' || !stageRef.current) return;
+    const el = stageRef.current;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      setStageSize((prev) =>
+        prev.width === Math.round(rect.width) && prev.height === Math.round(rect.height)
+          ? prev
+          : { width: Math.round(rect.width), height: Math.round(rect.height) }
+      );
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isOpen, viewerMode, showNotes]);
 
   // Redraw highlighter canvas whenever strokes, activeStroke, zoom, mode, or container size changes
   useLayoutEffect(() => {
     if (!isOpen || viewerMode !== 'view' || !currentAlgorithm || !canvasRef.current) return;
     renderStrokesToCanvas(canvasRef.current, currentAlgorithm.strokes, activeStroke);
-  }, [isOpen, viewerMode, currentAlgorithm, activeStroke, zoom, showNotes]);
+  }, [isOpen, viewerMode, currentAlgorithm, activeStroke, zoom, showNotes, stageSize, naturalSize]);
 
   useEffect(() => {
     if (!isOpen || viewerMode !== 'view' || !imageContainerRef.current) return;
@@ -304,10 +372,27 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
   const isInlineEdit = viewerMode === 'edit' && Boolean(currentAlgorithm.diagram);
   const isViewMode = !isInlineWalkthrough && !isInlineEdit;
 
+  // Compute true crisp layout dimensions (no CSS scale() GPU texture blur at 400%)
+  const fittedZoomedSize = (() => {
+    if (!naturalSize || stageSize.width <= 0 || stageSize.height <= 0) return null;
+    const rightReserve = stageSize.width >= 640 ? 96 : 80;
+    const leftReserve = stageSize.width >= 640 ? 40 : 24;
+    const verticalReserve = stageSize.width >= 640 ? 40 : 32;
+    const availW = Math.max(200, stageSize.width - rightReserve - leftReserve);
+    const availH = Math.max(180, stageSize.height - verticalReserve);
+    const fitScale = Math.min(availW / naturalSize.width, availH / naturalSize.height);
+    const baseW = Math.max(1, naturalSize.width * fitScale);
+    const baseH = Math.max(1, naturalSize.height * fitScale);
+    return {
+      width: Math.max(1, Math.round(baseW * zoom)),
+      height: Math.max(1, Math.round(baseH * zoom)),
+    };
+  })();
+
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 0.15 : -0.15;
-    setZoom((z) => clampZoom(z + factor));
+    applyZoom(zoomRef.current + factor, { x: e.clientX, y: e.clientY });
   };
 
   const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -629,6 +714,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
         ) : (
           /* Full-Bleed Seamless Algorithm Stage (no inner card division) */
           <div
+            ref={stageRef}
             onWheel={handleWheel}
             onPointerDown={handleStagePointerDown}
             onPointerMove={handleStagePointerMove}
@@ -654,27 +740,47 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
               className="top-4 left-4"
             />
 
-            {/* Seamless Edge-to-Edge Algorithm Surface with Zoom/Pan Transform */}
+            {/* Seamless Edge-to-Edge Algorithm Surface rendered at true zoomed resolution (razor-sharp up to 400%) */}
             <div
               key={currentAlgorithm.id}
-              className={`flex h-full w-full items-center justify-center py-4 pl-6 pr-20 sm:py-5 sm:pl-10 sm:pr-24 ${slideAnimClass}`}
+              className={`flex h-full w-full items-center justify-center overflow-hidden py-4 pl-6 pr-20 sm:py-5 sm:pl-10 sm:pr-24 ${slideAnimClass}`}
             >
               <div
                 style={{
-                  transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
-                  transition: isPanning
-                    ? 'none'
-                    : 'transform 160ms cubic-bezier(0.16, 1, 0.3, 1)',
+                  transform: `translate(${Math.round(pan.x)}px, ${Math.round(pan.y)}px)`,
                 }}
-                className="relative flex h-full w-full items-center justify-center will-change-transform"
+                className="relative flex shrink-0 items-center justify-center"
               >
-                <div ref={imageContainerRef} className="relative inline-block max-h-full max-w-full">
+                <div
+                  ref={imageContainerRef}
+                  style={
+                    fittedZoomedSize
+                      ? {
+                          width: `${fittedZoomedSize.width}px`,
+                          height: `${fittedZoomedSize.height}px`,
+                        }
+                      : undefined
+                  }
+                  className="relative inline-block shrink-0"
+                >
                   <img
                     src={currentAlgorithm.imageDataUrl}
                     alt={currentAlgorithm.title}
+                    width={fittedZoomedSize?.width}
+                    height={fittedZoomedSize?.height}
                     draggable={false}
+                    decoding="sync"
                     referrerPolicy="no-referrer"
-                    onLoad={() => {
+                    onLoad={(e) => {
+                      const imgEl = e.currentTarget;
+                      const parsedSvg = parseSvgDataUrlDimensions(currentAlgorithm.imageDataUrl);
+                      const w = parsedSvg?.width || imgEl.naturalWidth;
+                      const h = parsedSvg?.height || imgEl.naturalHeight;
+                      if (w > 0 && h > 0) {
+                        setNaturalSize((prev) =>
+                          prev && prev.width === w && prev.height === h ? prev : { width: w, height: h }
+                        );
+                      }
                       if (canvasRef.current) {
                         renderStrokesToCanvas(
                           canvasRef.current,
@@ -683,7 +789,11 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
                         );
                       }
                     }}
-                    className="block max-h-[calc(100vh-116px)] max-w-full object-contain pointer-events-none select-none"
+                    className={
+                      fittedZoomedSize
+                        ? 'block h-full w-full object-contain pointer-events-none select-none'
+                        : 'block max-h-[calc(100vh-116px)] max-w-full object-contain pointer-events-none select-none'
+                    }
                   />
 
                   {/* Non-destructive Fluorescent Highlighter Canvas Overlay */}
@@ -717,7 +827,7 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
               <div className="flex flex-col items-center gap-0.5">
                 <button
                   type="button"
-                  onClick={() => setZoom((z) => stepZoom(z, 'in'))}
+                  onClick={() => applyZoom(stepZoom(zoomRef.current, 'in'))}
                   aria-label="Acercar zoom"
                   title="Acercar (+)"
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-[#1D1D1F] transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3]"
@@ -726,12 +836,12 @@ export const QuickLookViewer: React.FC<QuickLookViewerProps> = ({
                 </button>
                 <ZoomPercentInput
                   zoom={zoom}
-                  onChangeZoom={(next) => setZoom(clampZoom(next))}
+                  onChangeZoom={(next) => applyZoom(next)}
                   ariaLabel="Porcentaje de zoom del algoritmo"
                 />
                 <button
                   type="button"
-                  onClick={() => setZoom((z) => stepZoom(z, 'out'))}
+                  onClick={() => applyZoom(stepZoom(zoomRef.current, 'out'))}
                   aria-label="Alejar zoom"
                   title="Alejar (−)"
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-[#1D1D1F] transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071E3]"

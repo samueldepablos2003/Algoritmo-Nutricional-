@@ -325,7 +325,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
     zoomRef.current = nextZoom;
     panRef.current = nextPan;
     if (worldLayerRef.current) {
-      worldLayerRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${nextZoom})`;
+      worldLayerRef.current.style.transform = `translate(${nextPan.x}px, ${nextPan.y}px) scale(${nextZoom})`;
     }
     setZoom(nextZoom);
     setPan(nextPan);
@@ -1251,7 +1251,7 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
       zoomRef.current = nextZoom;
       panRef.current = nextPan;
       if (worldLayerRef.current) {
-        worldLayerRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${nextZoom})`;
+        worldLayerRef.current.style.transform = `translate(${nextPan.x}px, ${nextPan.y}px) scale(${nextZoom})`;
       }
       vp.style.backgroundPosition = `${nextPan.x}px ${nextPan.y}px`;
       setZoom(nextZoom);
@@ -1988,7 +1988,9 @@ export const AlgorithmGenerator: React.FC<AlgorithmGeneratorProps> = ({
           <div
             ref={worldLayerRef}
             style={{
-              transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+              transform: isPanning
+                ? `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`
+                : `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: '0 0',
             }}
             className="absolute inset-0"

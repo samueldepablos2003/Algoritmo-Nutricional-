@@ -31,12 +31,30 @@ export type NodeTone = 'white' | 'gray' | 'mint' | 'amber' | 'rose' | 'blue';
 export type EdgeStyle = 'solid' | 'dashed' | 'straight';
 export type DiagramColorMode = 'color' | 'grayscale';
 export type DiagramPaletteId =
+  | 'organic-blend'
+  | 'clean-clinical'
+  | 'lab-blue'
+  | 'water-violet'
+  | 'optic-light'
+  | 'cyto-neon'
   | 'original'
   | 'tech-blue'
   | 'fresh-green'
   | 'elegant-purple'
   | 'warm-amber'
-  | 'soft-rose';
+  | 'soft-rose'
+  | 'nordic-forest'
+  | 'clinical-coral'
+  | 'deep-ocean'
+  | 'soft-lavender'
+  | 'warm-sand'
+  | 'tech-graphite'
+  | 'vital-emerald'
+  | 'medical-indigo'
+  | 'modern-terracotta'
+  | 'alpine-sky'
+  | 'clinical-plum'
+  | 'botanical-olive';
 
 export interface DiagramNode {
   id: string;
@@ -146,15 +164,24 @@ export interface CardOriginRect {
   height: number;
 }
 
-export const PRESET_TAGS: readonly string[] = [
+export const LIBRARY_FILTER_TAGS: readonly string[] = [
+  'Cirugía',
   'Críticos',
   'Gastroenterología',
+  'Neurología',
+  'Nutrición enteral',
+  'Nutrición parenteral',
+  'Rehabilitación',
+];
+
+export const PRESET_TAGS: readonly string[] = [
   'Cirugía',
-  'Pediatría',
-  'Nutrición Enteral',
-  'Nutrición Parenteral',
-  'Oncología',
-  'Nefrología',
+  'Críticos',
+  'Gastroenterología',
+  'Neurología',
+  'Nutrición enteral',
+  'Nutrición parenteral',
+  'Rehabilitación',
 ];
 
 export const HIGHLIGHTER_COLORS: Record<

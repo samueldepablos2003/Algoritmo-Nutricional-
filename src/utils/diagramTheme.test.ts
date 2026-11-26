@@ -22,8 +22,24 @@ const SAMPLE_NODE: DiagramNode = {
   tone: 'blue',
 };
 
-test('all 6 preset palettes and grayscale mode resolve distinct valid hex colors', () => {
-  assert.equal(DIAGRAM_PALETTES.length, 6);
+test('all 24 preset palettes and grayscale mode resolve distinct valid hex colors', () => {
+  assert.ok(DIAGRAM_PALETTES.length >= 20, `Expected at least 20 palettes, got ${DIAGRAM_PALETTES.length}`);
+  assert.equal(DIAGRAM_PALETTES.length, 24);
+  const hexRe = /^#[0-9A-Fa-f]{6}$/;
+  for (const palette of DIAGRAM_PALETTES) {
+    assert.equal(palette.previewDots.length, 4, `Palette ${palette.id} must have 4 preview dots`);
+    for (const dot of palette.previewDots) {
+      assert.match(dot, hexRe, `Invalid preview dot ${dot} in ${palette.id}`);
+    }
+    for (const tone of ['white', 'gray', 'blue', 'mint', 'amber', 'rose'] as const) {
+      const resolved = resolveNodeColors(tone, palette.id, 'color');
+      assert.match(resolved.fill, hexRe);
+      assert.match(resolved.stroke, hexRe);
+      assert.match(resolved.titleColor, hexRe);
+      assert.match(resolved.bodyColor, hexRe);
+    }
+  }
+
   const original = resolveNodeColors('blue', 'original', 'color');
   const green = resolveNodeColors('blue', 'fresh-green', 'color');
   const gray = resolveNodeColors('blue', 'fresh-green', 'grayscale');
